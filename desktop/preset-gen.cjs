@@ -18,6 +18,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const os = require('node:os')
+const { execFileSync } = require('node:child_process')
 
 const presetsRoot = () => path.join(os.homedir(), '.dsh', '.agent-presets')
 const fcChildDir = () => path.join(presetsRoot(), 'fc-child')
@@ -83,19 +84,85 @@ function installRouterPreset({ desktopDir } = {}) {
   return routerDir()
 }
 
+// Find a Git-for-Windows bash.exe on this machine. The author's executor
+// auto-detect probes only the DEFAULT install roots (ProgramFiles/LOCALAPPDATA)
+// plus PATH — but a custom install like D:\Git puts only D:\Git\cmd (git.exe
+// wrappers) on the raw Windows PATH, and the usr/bin bash dirs live in Git
+// Bash's own augmented PATH, invisible to the harness spawned from Electron.
+// Probe the registry InstallPath and known local roots too; prefer usr\bin
+// (the real MSYS bash) over bin\bash.exe (the 47KB wrapper).
+function findGitBash() {
+  const env = process.env
+  const roots = []
+  for (const p of [
+    env.GIT_BASH,
+    env.ProgramFiles && path.join(env.ProgramFiles, 'Git', 'bin', 'bash.exe'),
+    env['ProgramFiles(x86)'] && path.join(env['ProgramFiles(x86)'], 'Git', 'bin', 'bash.exe'),
+    env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, 'Programs', 'Git', 'bin', 'bash.exe'),
+  ]) {
+    if (p) roots.push(p)
+  }
+  for (const hive of ['HKLM\\SOFTWARE\\GitForWindows', 'HKCU\\SOFTWARE\\GitForWindows']) {
+    try {
+      const out = execFileSync('reg', ['query', hive, '/v', 'InstallPath'], {
+        encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
+      })
+      const m = /REG_SZ\s+(.+)/.exec(out)
+      if (m) {
+        const ip = m[1].trim()
+        roots.push(path.join(ip, 'usr', 'bin', 'bash.exe'), path.join(ip, 'bin', 'bash.exe'))
+      }
+    } catch { /* key absent on this machine */ }
+  }
+  for (const dir of String(env.PATH || '').split(path.delimiter)) {
+    if (dir) roots.push(path.join(dir, 'bash.exe'))
+  }
+  roots.push('D:\\Git\\usr\\bin\\bash.exe', 'D:\\Git\\bin\\bash.exe')
+  const seen = new Set()
+  for (const p of roots) {
+    if (!p || seen.has(p.toLowerCase())) continue
+    seen.add(p.toLowerCase())
+    if (fs.existsSync(p)) return p
+  }
+  return null
+}
+
 // Install the reviewed minimal-gitbash preset (upstream
-// lices/dsh-gitbash-preset @0.1.1, MIT bundled) from the bundled template,
-// verbatim. The executor auto-detects Git-for-Windows bash (GIT_BASH → install
-// roots → PATH) and gates commands on danger-full-access — author-original, no
-// local drift. The preset group disables itself on non-win32.
+// lices/dsh-gitbash-preset @0.1.1, MIT bundled) from the bundled template.
+// The bundled template stays author-original (auto-detect, machine-agnostic
+// for distribution); the INSTALLED copy pins the executor's shellPath to the
+// bash.exe found on THIS machine, because the author's auto-detect misses
+// custom Git install roots (observed: Git at D:\Git, raw PATH has only
+// D:\Git\cmd → executor fell back to 'bash' → ENOENT).
 function installMinimalGitbash({ desktopDir } = {}) {
   const base = desktopDir || __dirname
   const templateDir = path.join(base, 'presets', 'minimal-gitbash')
   fs.mkdirSync(gitbashDir(), { recursive: true })
-  for (const f of ['agent.cordis.yml', 'preset.yml', 'gitbash-executor.mjs']) {
+  for (const f of ['preset.yml', 'gitbash-executor.mjs']) {
     fs.copyFileSync(path.join(templateDir, f), path.join(gitbashDir(), f))
   }
+  let yml = fs.readFileSync(path.join(templateDir, 'agent.cordis.yml'), 'utf8')
+  const bash = findGitBash()
+  if (bash) {
+    // YAML single quotes keep backslashes literal — write the Windows path as-is.
+    // The template may carry CRLF line endings (git autocrlf); match any EOL
+    // and re-use it for the injected line. Fail loud if the pattern does not
+    // match — a silent no-op here would ship the broken auto-detect again.
+    const eol = yml.includes('\r\n') ? '\r\n' : '\n'
+    const injected = yml.replace(
+      /(name: \.\/gitbash-executor\.mjs[^\r\n]*\r?\n[ \t]+config:[^\r\n]*\r?\n)/,
+      `$1        shellPath: '${bash}'${eol}`,
+    )
+    if (injected === yml || !injected.includes(`shellPath: '${bash}'`)) {
+      throw new Error('installMinimalGitbash: failed to inject shellPath into the executor config block')
+    }
+    yml = injected
+  }
+  fs.writeFileSync(path.join(gitbashDir(), 'agent.cordis.yml'), yml)
   return gitbashDir()
 }
 
-module.exports = { generateFcChild, installRouterPreset, installMinimalGitbash, fcChildDir, routerDir, gitbashDir }
+module.exports = {
+  generateFcChild, installRouterPreset, installMinimalGitbash,
+  findGitBash, fcChildDir, routerDir, gitbashDir,
+}
