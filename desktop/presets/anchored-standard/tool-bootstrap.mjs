@@ -1,9 +1,9 @@
 /**
- * Anchored tool bootstrap — keep the FIRST model request on a small tool
- * surface, a small output budget, and free of auto-injected workspace/skill
- * context, then expose the full preset catalog (and the normal output budget
- * and context injections) once the session has produced its first durable
- * promotion signal.
+ * Anchored tool bootstrap — keep the FIRST model request on the Minimal
+ * preset's REAL tool schema (persistent `bash` + `str_replace_editor`), free
+ * of auto-injected workspace/skill context, then expose the full preset
+ * catalog (and the normal context injections) once the session has produced
+ * its first durable promotion signal.
  *
  * The phase is derived from durable session events, so resume and reload
  * preserve it. By default (`promoteOn: 'either'`) a session promotes after the
@@ -14,18 +14,32 @@
  * no tool call — the `'either'` default removes that trap while keeping the
  * first-request anchor intact.
  *
- * Two additional first-request conditions found during the 2026-08-15
- * reproduction work (issue #6):
+ * First-request conditions established by the reproduction work (issues #6
+ * and #11, 2026-08-15):
  *
- *  1. Output budget. On the official endpoint the first request's
- *     `max_tokens` dominates the trajectory anchor: 1024 reproduced the
- *     `We need` style in 26/32 runs against 0/5 at the adapter default of
- *     256000, independent of tool descriptions. Bootstrap therefore caps the
- *     first request at `bootstrapMaxTokens` (default 1024) and strips the cap
- *     after promotion — the next request's seed proposal carries the previous
+ *  1. Tool schema. The API-visible first-request catalog decides whether the
+ *     session anchors on the Minimal trajectory. At the adapter-default
+ *     maxTokens (256000 on the official endpoint) the Minimal tool pair —
+ *     persistent `bash` + `str_replace_editor` — anchored 5/5 runs with zero
+ *     `let me` first-lines, while every standard-family schema (pwsh/read,
+ *     pwsh only, sandboxed bash/read) fell into standard-like behavior
+ *     (11/11). Bootstrap therefore exposes exactly the Minimal pair, not
+ *     Standard's `pwsh`/`read`.
+ *
+ *  2. Output budget. On the official endpoint the first request's `max_tokens`
+ *     also dominated the trajectory anchor at 1024 (`We need` style in 26/32
+ *     runs against 0/5 at 256000, independent of tool descriptions). The
+ *     Minimal tool schema, however, anchors at 256000 WITHOUT any cap, and the
+ *     cap's delivery depends on the profile package's `prepareCall` behavior
+ *     (it reaches the request on the 0.1.0-rc.5 source checkout; a prebuilt
+ *     rc.6-reporting profile package observed in issue #11 overwrote it with
+ *     `adapterDefaults.maxTokens`). `bootstrapMaxTokens` is therefore OPT-IN:
+ *     leave it unset to run the Minimal schema at the adapter default, or set
+ *     it to cap the first request. When set, the cap is stripped after
+ *     promotion — the next request's seed proposal carries the previous
  *     header's maxTokens forward, so the release must be explicit.
  *
- *  2. Injected reminders. dsh-agent-instructions and dsh-tool-skill inject
+ *  3. Injected reminders. dsh-agent-instructions and dsh-tool-skill inject
  *     workspace instructions (AGENTS.md) and the skill catalog into the first
  *     step as user messages whenever such content exists. With the skill
  *     catalog present the anchor did not reproduce at all (0/9); without it
@@ -33,11 +47,10 @@
  *     stripped during bootstrap and allowed again after promotion. The
  *     stripped set is configurable via `suppressedContextSources` (default
  *     `['skill-catalog', 'agent-instructions']`); an explicitly empty array
- *     disables the context filter while keeping the tool bootstrap and the
- *     output cap. A user-initiated skill gesture (`skill-invocation`) is NOT
- *     in the default set: it is not an automatic injection, and stripping it
- *     would lose the skill content once the gesture scrolls out of the
- *     per-step claim.
+ *     disables the context filter while keeping the tool bootstrap. A
+ *     user-initiated skill gesture (`skill-invocation`) is NOT in the default
+ *     set: it is not an automatic injection, and stripping it would lose the
+ *     skill content once the gesture scrolls out of the per-step claim.
  *
  * Robustness:
  *  - Promotion decisions are memoized per session id for this process; the
@@ -68,8 +81,6 @@ export const name = 'anchored-tool-bootstrap'
  */
 export const inject = []
 
-const DEFAULT_BOOTSTRAP_MAX_TOKENS = 1024
-
 /** Durable session event types that count as a promotion signal per mode. */
 const PROMOTE_EVENTS = {
   'tool-call': ['tool/call'],
@@ -84,6 +95,14 @@ const PROMOTE_EVENTS = {
  * (`agent-instructions`). True Minimal mounts neither plugin.
  */
 const DEFAULT_SUPPRESSED_SOURCES = ['skill-catalog', 'agent-instructions']
+
+/**
+ * The default first-request catalog: the OFFICIAL Minimal preset's exact tool
+ * pair — the persistent `bash` shell and `str_replace_editor`. Issue #11
+ * measured this schema anchoring 5/5 at the adapter-default maxTokens while
+ * every standard-family schema failed 11/11.
+ */
+const DEFAULT_BOOTSTRAP_TOOLS = ['bash', 'str_replace_editor']
 
 function stringList(value, field) {
   if (!Array.isArray(value) || value.length === 0 || value.some((item) => typeof item !== 'string' || item.length === 0)) {
@@ -111,8 +130,14 @@ function sourceList(value, field, fallback) {
   return new Set(value)
 }
 
-function positiveInt(value, field, fallback) {
-  if (value === undefined) return fallback
+/**
+ * Validate the optional first-request output cap. `undefined` means NO cap:
+ * the Minimal tool schema anchors at the adapter-default maxTokens, and the
+ * cap's delivery is profile-package dependent (see the header note), so it is
+ * opt-in rather than the default.
+ */
+function optionalPositiveInt(value, field) {
+  if (value === undefined) return undefined
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new TypeError(`${name}: ${field} must be a positive safe integer`)
   }
@@ -121,10 +146,9 @@ function positiveInt(value, field, fallback) {
 
 /** Register the per-session bootstrap filters. */
 export function apply(ctx, config) {
-  const commonTools = stringList(config.commonTools, 'commonTools')
-  const shellTools = stringList(config.shellTools, 'shellTools')
+  const bootstrapTools = stringList(config.bootstrapTools, 'bootstrapTools')
   const promoteEvents = parsePromoteOn(config.promoteOn)
-  const bootstrapMaxTokens = positiveInt(config.bootstrapMaxTokens, 'bootstrapMaxTokens', DEFAULT_BOOTSTRAP_MAX_TOKENS)
+  const bootstrapMaxTokens = optionalPositiveInt(config.bootstrapMaxTokens, 'bootstrapMaxTokens')
   const suppressedSources = sourceList(config.suppressedContextSources, 'suppressedContextSources', DEFAULT_SUPPRESSED_SOURCES)
 
   /** Sessions already promoted in this process. Promotion is append-only, so a Set is sound. */
@@ -154,23 +178,20 @@ export function apply(ctx, config) {
     return hit
   }
 
-  /** Narrow the assembled catalog to one platform shell plus the common tools. */
+  /** Narrow the assembled catalog to the bootstrap tool set. */
   const applyBootstrap = (assembled) => {
     const available = new Set(assembled.tools.map((tool) => tool.name))
-    const selectedShells = shellTools.filter((toolName) => available.has(toolName))
-    const missingCommon = commonTools.filter((toolName) => !available.has(toolName))
-    if (selectedShells.length !== 1 || missingCommon.length > 0) {
+    const missing = bootstrapTools.filter((toolName) => !available.has(toolName))
+    if (missing.length > 0) {
       warnOnce(
-        `${name}: expected exactly one bootstrap shell and every common tool; `
-        + `shells=${JSON.stringify(selectedShells)}, missing=${JSON.stringify(missingCommon)} — `
+        `${name}: expected every bootstrap tool; missing=${JSON.stringify(missing)} — `
         + 'bootstrap disabled, full catalog exposed',
       )
       return assembled
     }
-    const bootstrap = new Set([...selectedShells, ...commonTools])
     return {
       ...assembled,
-      tools: assembled.tools.filter((tool) => bootstrap.has(tool.name)),
+      tools: assembled.tools.filter((tool) => bootstrapTools.includes(tool.name)),
     }
   }
 
@@ -187,25 +208,35 @@ export function apply(ctx, config) {
     }
   })
 
-  // Cap the first model request's output budget while bootstrapping.
-  ctx.on('agent/request', async (payload, next) => {
-    const resolved = await next()
-    const agent = payload.agent
-    if (isPromoted(agent)) {
-      // The next request's seed proposal carries the previous header's
-      // maxTokens forward, so the injected cap must be stripped explicitly —
-      // otherwise it would persist for the whole session.
-      if (resolved.maxTokens === bootstrapMaxTokens) {
-        const { maxTokens: _bootstrap, ...rest } = resolved
-        return rest
+  // Optionally cap the first model request's output budget while bootstrapping.
+  // Unset (`bootstrapMaxTokens` omitted) means the adapter default flows — the
+  // Minimal tool schema anchors at 256000 without a cap (issue #11).
+  if (bootstrapMaxTokens !== undefined) {
+    // Same registration discipline as the pre-step strip below: `prepend`
+    // keeps this listener the OUTERMOST transform of the agent/request
+    // waterfall for the same registration-order reasons (loader row
+    // application is concurrent; row order alone does not decide listener
+    // order — see issue #6 and upstream PR #13), so a later listener can
+    // never override the first-round budget after we set it.
+    ctx.on('agent/request', async (payload, next) => {
+      const resolved = await next()
+      const agent = payload.agent
+      if (isPromoted(agent)) {
+        // The next request's seed proposal carries the previous header's
+        // maxTokens forward, so the injected cap must be stripped explicitly —
+        // otherwise it would persist for the whole session.
+        if (resolved.maxTokens === bootstrapMaxTokens) {
+          const { maxTokens: _bootstrap, ...rest } = resolved
+          return rest
+        }
+        return resolved
       }
-      return resolved
-    }
-    return {
-      ...resolved,
-      maxTokens: bootstrapMaxTokens,
-    }
-  })
+      return {
+        ...resolved,
+        maxTokens: bootstrapMaxTokens,
+      }
+    }, { prepend: true })
+  }
 
   // Strip first-step injected reminders (skill catalog, AGENTS.md) during
   // bootstrap. Because this listener is the first registered (see the inject

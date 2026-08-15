@@ -8,7 +8,9 @@
 #                  The shell is the Git-for-Windows bash executor (the
 #                  minimal-gitbash variant: MSYS bash, sandbox-gated to
 #                  danger-full-access), NOT the persistent PTY shell.
-#   output         1024-token cap (bootstrapMaxTokens)
+#   output         no cap — the adapter default flows (upstream issue #11:
+#                  the Minimal pair anchors 5/5 at 256000 without any cap;
+#                  `bootstrapMaxTokens` stays opt-in)
 #   context        AGENTS.md and the skill catalog are stripped (suppressed
 #                  by the bootstrap filter below)
 #
@@ -17,7 +19,6 @@
 #   tools          the full Standard catalog (subagents, skills, web, todo,
 #                  plan mode, compaction, pwsh, …)
 #   context        AGENTS.md + skill catalog injections resume
-#   output         the normal budget returns (the cap is stripped explicitly)
 #
 # The subagent spawn/fork rows carry `agentOptions.model` injected by
 # desktop/preset-gen.cjs (child model), so delegated work runs the configured
@@ -56,10 +57,11 @@
 #
 # V4 Pro conditions strongly on the API tool catalog AND the first request
 # output budget. Bootstrap request #1 with the gitbash shell plus
-# `str_replace_editor` (the official Minimal pair) and a small maxTokens cap;
-# after the session records its first durable promotion signal (a tool call OR
-# the first assistant message — `promoteOn: either`), later steps expose every
-# Standard tool below and the normal output budget returns. See
+# `str_replace_editor` (the official Minimal pair — the ONLY schema that
+# anchors 5/5 at the adapter-default maxTokens, upstream issue #11); after the
+# session records its first durable promotion signal (a tool call OR the first
+# assistant message — `promoteOn: either`), later steps expose every Standard
+# tool below. `bootstrapMaxTokens` is opt-in (unset = adapter default); see
 # tool-bootstrap.mjs for the other triggers.
 #
 # The same phase gate suppresses AUTO-INJECTED context on request #1:
@@ -73,10 +75,8 @@
 - id: tool-bootstrap
   name: ./tool-bootstrap.mjs
   config:
-    shellTools: [bash]
-    commonTools: [str_replace_editor]
+    bootstrapTools: [bash, str_replace_editor]
     promoteOn: either
-    bootstrapMaxTokens: 1024
     suppressedContextSources: [agent-instructions, skill-catalog]
 
 # ── identity ────────────────────────────────────────────────────────────────

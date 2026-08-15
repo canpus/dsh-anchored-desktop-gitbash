@@ -28,11 +28,15 @@
 # strip the final transform, so request #1 stays Minimal-exact (see issue #6).
 #
 # V4 Pro conditions strongly on the API tool catalog AND the first request
-# output budget. Bootstrap request #1 with one native shell plus `read` and a
-# small maxTokens cap; after the session records its first durable promotion
-# signal (a tool call OR the first assistant message, default
-# `promoteOn: either`), later steps expose every Standard tool below and the
-# normal output budget returns. See tool-bootstrap.mjs for the other triggers.
+# output budget. Bootstrap request #1 with the OFFICIAL Minimal preset's real
+# tool pair — persistent `bash` + `str_replace_editor` — which anchors at the
+# adapter-default maxTokens (256000) with no output cap needed (issue #11:
+# 5/5 anchored vs 11/11 standard-like for every standard-family schema);
+# after the session records its first durable promotion signal (a tool call OR
+# the first assistant message, default `promoteOn: either`), later steps
+# expose every Standard tool below. `bootstrapMaxTokens` is opt-in for
+# standard-schema bootstraps; unset, the adapter default flows. See
+# tool-bootstrap.mjs for the other triggers.
 #
 # The same phase gate suppresses AUTO-INJECTED context on request #1:
 # `suppressedContextSources` lists the `agent/pre-step` message sources the
@@ -41,14 +45,12 @@
 # reminder (`skill-catalog`) and the workspace instruction digest
 # (`agent-instructions`). User-initiated skill gestures are not filtered, and
 # both injections return unchanged from request #2 on. Set the list to [] to
-# disable the context filter while keeping the tool bootstrap and output cap.
+# disable the context filter while keeping the tool bootstrap.
 - id: tool-bootstrap
   name: ./tool-bootstrap.mjs
   config:
-    shellTools: [bash, pwsh]
-    commonTools: [read]
+    bootstrapTools: [bash, str_replace_editor]
     promoteOn: either
-    bootstrapMaxTokens: 1024
     suppressedContextSources: [agent-instructions, skill-catalog]
 
 # ── identity ────────────────────────────────────────────────────────────────
@@ -85,11 +87,50 @@
 # host-plane too.
 - id: tool-bash
   name: '@deepseek-ai/dsh-tool-bash'
-  disabled: !!js process.platform === 'win32'
+  # Disabled on EVERY platform, not just Windows: `dsh-tool-bash-persistent`
+  # below registers the same `bash` tool name into this same preset layer, and
+  # the tools registry rejects duplicates within one layer. The persistent
+  # shell (the Minimal preset's own shell) is the preset's bash; it consumes
+  # the host sandbox policy through the terminals realm.
+  disabled: true
 
 - id: tool-pwsh
   name: '@deepseek-ai/dsh-tool-pwsh'
   disabled: !!js process.platform !== 'win32'
+
+# The Minimal preset's shell: a PTY-backed persistent bash, byte-identical in
+# configuration to the official `minimal` preset's `persistent-shell` group so
+# the first request exposes exactly Minimal's real `bash` schema. The PTY
+# registry is an agent-owned service, so it lives in an entry-local realm; the
+# backend still consumes the host sandbox policy and subprocess implementation,
+# while the tool registers into this agent's scoped catalog.
+- id: persistent-shell
+  name: cordis:group
+  group: true
+  isolate:
+    terminals: true
+  config:
+    - id: pty
+      name: '@deepseek-ai/dsh-terminal'
+
+    - id: terminal-bash
+      name: '@deepseek-ai/dsh-terminal-bash'
+      config:
+        timeoutMs: 300000
+
+    - id: persistent-bash
+      name: '@deepseek-ai/dsh-tool-bash-persistent'
+      config:
+        timeoutMs: 300000
+        description: |-
+          Run commands in a bash shell
+          * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.
+          * You don't have access to the internet via this tool.
+          * You do have access to a mirror of common linux and python packages via apt and pip.
+          * State is persistent across command calls and discussions with the user.
+          * To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.
+          * Please avoid commands that may produce a very large amount of output.
+          * Please run long lived commands in the background, e.g. 'sleep 10 &' or start a server in the background.
 
 # ── filesystem ──────────────────────────────────────────────────────────────
 
@@ -102,6 +143,28 @@
   name: '@deepseek-ai/dsh-tool-fs-search'
   config:
     sampleOverCapGlobResults: false
+
+# The Minimal preset's second tool: `str_replace_editor` over a bare local
+# filesystem, byte-identical in configuration to the official `minimal`
+# preset's `filesystem` group. The editor's own realm shadows the host's
+# sandboxed `fs` provider only inside this group, so the standard `read`/
+# `write`/`edit` tools keep the sandboxed fs while the bootstrap editor uses
+# the local one.
+- id: bootstrap-filesystem
+  name: cordis:group
+  group: true
+  isolate:
+    fs: true
+  config:
+    - id: fs-local
+      name: '@deepseek-ai/dsh-fs-local'
+      config:
+        cwd: !!js process.env.DSH_CWD ?? process.cwd()
+
+    - id: str-replace-editor
+      name: '@deepseek-ai/dsh-tool-str-replace-editor'
+      config:
+        maxOutputChars: 16000
 
 # ── background jobs ────────────────────────────────────────────────────────
 

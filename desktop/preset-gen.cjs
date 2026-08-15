@@ -3,8 +3,8 @@
 // from the bundled templates under desktop/presets/.
 //
 //   fc-child         fc-child-fusion template — the gitbash-minimal anchor
-//                    (first request: bash(GitBash) + str_replace_editor +
-//                    1024 cap + no AGENTS/skill injections) fused with the
+//                    (first request: bash(GitBash) + str_replace_editor, no
+//                    output cap, no AGENTS/skill injections) fused with the
 //                    anchored-standard promotion phase (first tool/call OR
 //                    first assistant message → full Standard catalog + AGENTS
 //                    resume) + child-model agentOptions on spawn/fork rows.
@@ -83,7 +83,7 @@ function generateFcChild(modelId, { desktopDir } = {}) {
     path.join(fcChildDir(), 'preset.yml'),
     [
       'name: 自定义子模型',
-      'description: 融合预设（GitBash 锚定 + 开放升级）：首轮 = 官方极简对（bash(GitBash) + str_replace_editor）+ 1024 输出封顶 + 无 AGENTS/skill 注入（锚定出 V4Pro 新型思维链）；首个工具调用或首条回复后 = 全量 Standard 工具（subagent 全家/pwsh/web/todo/skill 等）+ AGENTS 恢复注入。bash 经 Git-for-Windows 执行，需会话沙箱为「完全访问」（或按提示单次升级）。子 Agent 默认模型在窗口标题栏「子 Agent 模型」中设置。',
+      'description: 融合预设（GitBash 锚定 + 开放升级）：首轮 = 官方极简对（bash(GitBash) + str_replace_editor，无输出封顶——上游 issue #11 实测该 schema 在默认 maxTokens 下 5/5 锚定）+ 无 AGENTS/skill 注入（锚定出 V4Pro 新型思维链）；首个工具调用或首条回复后 = 全量 Standard 工具（subagent 全家/pwsh/web/todo/skill 等）+ AGENTS 恢复注入。bash 经 Git-for-Windows 执行，需会话沙箱为「完全访问」（或按提示单次升级）。子 Agent 默认模型在窗口标题栏「模式切换」中设置。',
       'order: 5',
     ].join('\n') + '\n',
   )
