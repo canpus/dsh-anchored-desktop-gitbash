@@ -1,18 +1,22 @@
-// fc-child preset generator — the single source of truth shared by main.js
-// (model dialog apply) and CLI maintenance. Generates the ONE dynamic user
-// preset `fc-child` (display name「自定义子模型」) from the bundled
-// anchored-standard template (desktop/presets/anchored-standard/, upstream
-// xiaobright/dsh-anchored-standard @6472c1c) with the child-model agentOptions
-// injected on the spawn/fork subagent rows.
+// Preset generators — the single source of truth shared by main.js (model
+// dialog) and CLI maintenance. Generates user presets under ~/.dsh/.agent-presets/
+// from the bundled templates under desktop/presets/.
+//
+//   fc-child         anchored-standard template (upstream
+//                    xiaobright/dsh-anchored-standard @6472c1c) + child-model
+//                    agentOptions injected on the spawn/fork subagent rows.
+//   router-standard  reviewed router template (upstream
+//                    yjh051108/dsh-router-standard @5737535, MIT + NOTICE),
+//                    copied verbatim — kept author-original for A/B testing.
 'use strict'
 
 const fs = require('node:fs')
 const path = require('node:path')
 const os = require('node:os')
 
-function fcChildDir() {
-  return path.join(os.homedir(), '.dsh', '.agent-presets', 'fc-child')
-}
+const presetsRoot = () => path.join(os.homedir(), '.dsh', '.agent-presets')
+const fcChildDir = () => path.join(presetsRoot(), 'fc-child')
+const routerDir = () => path.join(presetsRoot(), 'router-standard')
 
 // Inject `agentOptions.model` into the subagent spawn/fork rows. The template
 // rows are indented 8 spaces; `\s+` matches any indentation so minor upstream
@@ -29,6 +33,9 @@ function injectChildModel(src, modelId) {
     )
 }
 
+// Generate the ONE dynamic user preset `fc-child` (display name「自定义子模型」)
+// from the bundled anchored-standard template. Re-applying a model re-derives
+// everything from the current template.
 function generateFcChild(modelId, { desktopDir } = {}) {
   const base = desktopDir || __dirname
   const templateDir = path.join(base, 'presets', 'anchored-standard')
@@ -55,4 +62,19 @@ function generateFcChild(modelId, { desktopDir } = {}) {
   return fcChildDir()
 }
 
-module.exports = { generateFcChild, fcChildDir }
+// Install the reviewed router-standard preset (upstream
+// yjh051108/dsh-router-standard @5737535, MIT + NOTICE bundled) from the
+// bundled template, verbatim (author-original, no child-model injection, so
+// the A/B comparison against fc-child stays clean). Idempotent overwrite keeps
+// the installed copy in sync with the bundled version.
+function installRouterPreset({ desktopDir } = {}) {
+  const base = desktopDir || __dirname
+  const templateDir = path.join(base, 'presets', 'router-standard')
+  fs.mkdirSync(routerDir(), { recursive: true })
+  for (const f of ['agent.cordis.yml', 'preset.yml', 'router-bootstrap.mjs', 'router-core.mjs']) {
+    fs.copyFileSync(path.join(templateDir, f), path.join(routerDir(), f))
+  }
+  return routerDir()
+}
+
+module.exports = { generateFcChild, installRouterPreset, fcChildDir, routerDir }
