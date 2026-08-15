@@ -42,7 +42,7 @@
       <div id="sessions"><div class="item disabled">加载中…</div></div>
     </div>
   </div>
-  <div class="note">导出该会话的完整消息记录（用户/助手全部消息，含时间戳）为 PDF。</div>
+  <div class="note">导出该会话的完整消息记录（用户/助手全部消息，含时间戳）为 PDF。<label style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;margin-left:8px"><input type="checkbox" id="chk-history" style="vertical-align:middle"> 包含历史对话（已归档）</label></div>
   <div id="status"></div>
   <div class="btn-row">
     <button class="btn ghost" id="btn-close">关闭</button>
@@ -66,13 +66,23 @@
         const when = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
         const el = document.createElement('div')
         el.className = 'item' + (s.sessionId === state.selected ? ' selected' : '')
-        el.textContent = `${s.title} · ${when}`
+        el.textContent = `${s.title} · ${when}${s.archived ? '（归档）' : ''}`
         el.title = s.title
         el.onclick = () => { state.selected = s.sessionId; renderSessions() }
         $sessions.appendChild(el)
       }
     }
 
+    async function load(includeHistory) {
+      setStatus('')
+      try {
+        state = await window.dshShell.getSessions(includeHistory)
+        if (state.selected && !state.sessions.some((s) => s.sessionId === state.selected)) state.selected = null
+        renderSessions()
+      } catch (e) { setStatus('✗ 加载失败：' + e, 'err') }
+    }
+
+    document.getElementById('chk-history').onchange = (e) => load(e.target.checked)
     document.getElementById('btn-close').onclick = () => window.dshShell.close()
     document.getElementById('btn-export').onclick = async () => {
       if (!state.selected) { setStatus('请先选择一个会话', 'err'); return }
@@ -86,16 +96,22 @@
     }
 
     ;(async () => {
-      try {
-        state = await window.dshShell.getSessions()
-        renderSessions()
-      } catch (e) { setStatus('✗ 加载失败：' + e, 'err') }
+      await load(false)
     })()
+    function applyTheme(t) {
+      const light = t === 'light'
+      document.body.style.background = light ? '#f8fafc' : '#0f172a'
+      document.body.style.color = light ? '#0f172a' : '#e2e8f0'
+      // The ghost 关闭 button inherits .btn's white text — invisible on the
+      // light background unless recolored here.
+      const ghost = document.getElementById('btn-close')
+      if (ghost) {
+        ghost.style.color = light ? '#0f172a' : '#e2e8f0'
+        ghost.style.borderColor = light ? 'rgba(15,23,42,.35)' : 'rgba(255,255,255,.25)'
+      }
+    }
     try {
-      window.dshShell.onTheme((t) => {
-        document.body.style.background = t === 'light' ? '#f8fafc' : '#0f172a'
-        document.body.style.color = t === 'light' ? '#0f172a' : '#e2e8f0'
-      })
+      window.dshShell.onTheme(applyTheme)
     } catch (e) { /* preload missing */ }
   </script>
 </body>

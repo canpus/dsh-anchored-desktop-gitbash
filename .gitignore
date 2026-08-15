@@ -20,3 +20,6 @@ History_log.md
 # ---- 日志 ----
 *.log
 docs/*.log
+
+# ---- 壳运行时状态（缩放级别等，不入库）----
+desktop/shell-state.json

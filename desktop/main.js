@@ -241,7 +241,10 @@ function createWindow() {
   mainView.webContents.on('preload-error', (_event, preloadPath, error) => {
     log('PRELOAD ERROR:', preloadPath, String(error && error.message || error))
   })
-  mainView.webContents.on('did-finish-load', injectMainWorldScript)
+  mainView.webContents.on('did-finish-load', () => {
+    injectMainWorldScript()
+    if (initialZoom !== 0) mainView.webContents.setZoomLevel(initialZoom)
+  })
   win.contentView.addChildView(titlebarView)
   win.contentView.addChildView(mainView)
   layoutViews()
@@ -297,6 +300,12 @@ function onShellAction(action) {
     case 'export-pdf':
       openExportDialog()
       break
+    case 'font-minus':
+      adjustZoom(-0.5)
+      break
+    case 'font-plus':
+      adjustZoom(0.5)
+      break
     case 'restart':
       restart()
       break
@@ -337,14 +346,31 @@ function httpRpc(method, payload = {}) {
   })
 }
 
-// ---- zoom (Ctrl+wheel / Ctrl+=/-/0 forwarded by the main-view preload) ----
-ipcMain.on('zoom-delta', (_e, dir) => {
-  if (!mainView) return
-  const level = Math.max(-3, Math.min(3, (mainView.webContents.getZoomLevel() || 0) + (dir > 0 ? 0.5 : -0.5)))
+// ---- zoom (Ctrl+wheel / Ctrl+=/-/0 forwarded by the main-view preload;
+// persisted in shell-state.json so the font size survives restarts) ----
+const STATE_PATH = path.join(__dirname, 'shell-state.json')
+function loadState() {
+  try { return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')) } catch { return {} }
+}
+function persistZoom(level) {
+  try {
+    const st = loadState()
+    st.zoomLevel = level
+    fs.writeFileSync(STATE_PATH, JSON.stringify(st, null, 2) + '\n')
+  } catch (e) { log('zoom persist failed:', String(e)) }
+}
+const initialZoom = Number(loadState().zoomLevel) || 0
+
+function adjustZoom(dir) {
+  if (!mainView || mainView.webContents.isDestroyed()) return
+  const level = Math.max(-3, Math.min(5, (mainView.webContents.getZoomLevel() || 0) + (dir > 0 ? 0.5 : -0.5)))
   mainView.webContents.setZoomLevel(level)
-})
+  persistZoom(level)
+}
+ipcMain.on('zoom-delta', (_e, dir) => adjustZoom(dir))
 ipcMain.on('zoom-reset', () => {
-  if (mainView) mainView.webContents.setZoomLevel(0)
+  if (mainView && !mainView.webContents.isDestroyed()) mainView.webContents.setZoomLevel(0)
+  persistZoom(0)
 })
 
 // ---- export a FULL conversation as PDF (session.history → HTML → printToPDF) ----
@@ -372,17 +398,35 @@ function openExportDialog() {
   })
 }
 
-ipcMain.handle('export-dialog:get-sessions', async () => {
-  const sl = await httpRpc('session.list')
-  const sessions = (sl.items || [])
+ipcMain.handle('export-dialog:get-sessions', async (_e, { includeHistory = false } = {}) => {
+  const [sl, wl] = await Promise.all([httpRpc('session.list'), httpRpc('workspace.list')])
+  const items = sl.items || []
+  const archived = new Set(wl.archivedSessionIds || [])
+  // The session projection carries no workspaceId; workspace.list maps each
+  // workspace to its sessionIds. "Current workspace" = the one holding the
+  // most recently updated non-archived session (exact with one workspace).
+  let currentIds = null
+  let best = -1
+  for (const w of wl.items || []) {
+    const ids = w.sessionIds || []
+    const recent = Math.max(0, ...ids.map((id) => {
+      const s = items.find((x) => x.sessionId === id)
+      return s ? (s.updatedAt || 0) : 0
+    }))
+    if (recent > best) { best = recent; currentIds = new Set(ids) }
+  }
+  const inCurrent = (s) => currentIds === null || currentIds.has(s.sessionId)
+  const sessions = items
     .filter((s) => !s.blank && !s.parentSessionId && s.origin !== 'subagent')
+    .filter((s) => inCurrent(s) && (includeHistory || !archived.has(s.sessionId)))
     .map((s) => ({
       sessionId: s.sessionId,
       title: (s.projections && s.projections.values && s.projections.values.title) || '未命名会话',
       updatedAt: s.updatedAt || 0,
+      archived: archived.has(s.sessionId),
     }))
     .sort((a, b) => b.updatedAt - a.updatedAt)
-  return { sessions }
+  return { sessions, historyCount: archived.size }
 })
 
 function escapeHtml(t) {
@@ -565,11 +609,14 @@ ipcMain.handle('model-dialog:get-data', async () => {
     })).filter((m) => m.id),
   }))
   // Hide legacy fc-* presets from earlier iterations (their directories stay
-  // on disk because live sessions still reference them in their headers).
+  // on disk because live sessions still reference them in their headers), and
+  // the third-party router/gitbash presets — the picker shows the official
+  // four modes plus 自定义子模型 only (user request, v0.3.5).
   const LEGACY_FC = /^fc-(?!child$)/
+  const HIDDEN_PRESETS = new Set(['minimal-gitbash', 'router-standard'])
   return {
     groups,
-    presets: (presets.presets || []).filter((p) => !LEGACY_FC.test(p.id)),
+    presets: (presets.presets || []).filter((p) => !LEGACY_FC.test(p.id) && !HIDDEN_PRESETS.has(p.id)),
     currentModel: readFcChildModel(),
   }
 })
@@ -1071,6 +1118,43 @@ async function locateCurrentSessionId() {
   const pool = (running.length ? running : items).slice().sort((a, b) => b.updatedAt - a.updatedAt)
   return pool[0].sessionId
 }
+
+// ---- file drop (v0.3.5): the main-view preload intercepts drops that contain
+// at least one non-image file, sends the OS paths here; we copy every file
+// into a per-conversation temp dir and inject name+path context into the
+// composer (the user sends it — nothing is auto-submitted). Pure-image drops
+// are left to the official composer attach flow untouched. Images inside a
+// mixed drop are copied + path-referenced instead of attached. ----
+ipcMain.on('shell:file-drop', async (_e, items) => {
+  try {
+    const sessionId = await locateCurrentSessionId()
+    const safe = String(sessionId || 'unknown').replace(/[^A-Za-z0-9_-]/g, '_')
+    const dir = path.join(os.tmpdir(), 'dsh-desktop-uploads', safe)
+    fs.mkdirSync(dir, { recursive: true })
+    const lines = []
+    for (const it of Array.isArray(items) ? items : []) {
+      if (!it || !it.name) continue
+      const name = path.basename(String(it.name))
+      const src = it.path
+      if (!src || !fs.existsSync(src)) {
+        lines.push(`[文件] ${name}（无法访问源文件: ${src || '未知路径'}）`)
+        continue
+      }
+      let dest = path.join(dir, name)
+      let n = 1
+      const ext = path.extname(name)
+      while (fs.existsSync(dest)) {
+        dest = path.join(dir, `${path.basename(name, ext)}(${n})${ext}`)
+        n += 1
+      }
+      fs.copyFileSync(src, dest)
+      lines.push(`${it.isImage ? '[图片]' : '[文件]'} ${name} 已复制到会话临时区: ${dest}`)
+    }
+    if (lines.length > 0) injectText(lines.join('\n') + '\n')
+  } catch (err) {
+    log('file-drop failed:', String((err && err.message) || err))
+  }
+})
 
 // Find the user/message in the history by its message id; return the
 // prompt-able text parts plus its seq (the fork anchor). Pages backwards from

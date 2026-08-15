@@ -36,6 +36,8 @@
   <div class="bar">
     <span class="title">DeepSeek Harness</span>
     <div class="btns">
+      <button id="btn-font-minus" title="缩小字体（Ctrl+-）">A−</button>
+      <button id="btn-font-plus" title="放大字体（Ctrl+=）">A+</button>
       <button id="btn-subagent">模式切换</button>
       <button id="btn-pdf">导出对话</button>
       <button id="btn-update">检查更新</button>
@@ -46,6 +48,8 @@
     const send = (action) => {
       try { window.dshShell && window.dshShell.send(action) } catch (e) { /* preload missing */ }
     }
+    document.getElementById('btn-font-minus').addEventListener('click', () => send('font-minus'))
+    document.getElementById('btn-font-plus').addEventListener('click', () => send('font-plus'))
     document.getElementById('btn-subagent').addEventListener('click', () => send('subagent-model'))
     document.getElementById('btn-pdf').addEventListener('click', () => send('export-pdf'))
     document.getElementById('btn-update').addEventListener('click', () => send('check-update'))

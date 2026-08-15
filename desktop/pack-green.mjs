@@ -159,10 +159,12 @@ fs.writeFileSync(path.join(STAGE, '说明.txt'), [
   '',
   '1. 首次启动会重建依赖链接（约 1-5 分钟，无需联网、无需管理员权限），并在 %USERPROFILE%\\.dsh 自建数据目录；',
   '   API Key 请在应用内「设置」中填写（不随包分发）。',
-  '2. 模型与子 Agent 模型：窗口标题栏「子 Agent 模型」按钮。',
+  '2. 模型与子 Agent 模型：窗口标题栏「模式切换」按钮。',
   '3. 网络代理：托盘图标「代理设置」（默认直连，留空即可）。',
   '4. 升级：托盘图标「检查更新」——需要本机装有 git 与 Node（pnpm 由 corepack 提供）。',
   '5. 若 Windows SmartScreen 提示：electron 二进制为官方签名，zip 本身未签名，选择「仍要运行」。',
+  '6. 字体缩放：Ctrl+滚轮 / Ctrl+= / Ctrl+- / Ctrl+0，或标题栏 A− / A+ 按钮（自动记忆）。',
+  '7. 文件拖入对话窗口：非图片文件会复制到会话临时区（%TEMP%\\dsh-desktop-uploads\\会话ID）并把文件名+路径注入输入框（按回车发给模型）；图片仍走官方附件流程。',
   '',
   `版本：v${pkg.version}（上游 deepseek-harness @${pkg.upstreamCommit ?? '见 desktop/shell-config.json'}）`,
 ].join('\r\n'))
