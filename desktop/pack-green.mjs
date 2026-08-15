@@ -41,7 +41,15 @@ function robocopy(src, dst, { excludeDirs = [] } = {}) {
 
 // Windows ships bsdtar (libarchive) at System32 — it supports zip via -a.
 // Git Bash's GNU tar shadows PATH and cannot write zips ("Cannot connect to C:").
-const TAR = fs.existsSync('C:\\Windows\\System32\\tar.exe') ? 'C:\\Windows\\System32\\tar.exe' : 'tar'
+// WORSE: GNU tar `-a` with a .zip suffix silently writes a PLAIN TAR, and the
+// verify below lists entries with libarchive (format-blind) — a tar-named-.zip
+// passed entry checks and shipped broken (v0.3.0 incident, D61). Resolve System32
+// bsdtar EXPLICITLY and fail fast unless it reports libarchive.
+const TAR = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe')
+const tarVersion = spawnSync(TAR, ['--version'], { encoding: 'utf8' })
+if (tarVersion.status !== 0 || !/libarchive|bsdtar/i.test(String(tarVersion.stdout || '') + String(tarVersion.stderr || ''))) {
+  throw new Error(`System32 tar.exe is not bsdtar/libarchive (${tarVersion.stdout || tarVersion.stderr || 'missing'}) — refusing to build`)
+}
 
 function sh(cmd, args) {
   const r = spawnSync(cmd, args, { stdio: 'inherit' })
@@ -167,7 +175,7 @@ fs.writeFileSync(path.join(STAGE, '说明.txt'), [
 const ZIP_TMP = path.join(DIST, `.${path.basename(ZIP)}.partial`)
 log(`zip → ${ZIP}`)
 fs.rmSync(ZIP_TMP, { force: true })
-sh(TAR, ['-a', '-c', '-f', ZIP_TMP, '-C', DIST, path.basename(STAGE)])
+sh(TAR, ['-a', '--format', 'zip', '-c', '-f', ZIP_TMP, '-C', DIST, path.basename(STAGE)])
 
 // ---- verify ----
 log('verify zip contents')
@@ -222,8 +230,45 @@ const sizeMb = (fs.statSync(ZIP_TMP).size / 1048576).toFixed(1)
 log(`entries=${entries.length}, zip=${sizeMb} MB, ${ok ? 'VERIFY OK' : 'VERIFY FAILED'}`)
 if (!ok) process.exit(1)
 
+// Format integrity: the entry list alone is format-blind (libarchive reads any
+// format — a tar named .zip lists fine). Assert real ZIP structure and, when
+// unzip exists on PATH, run a full CRC pass.
+function zipMagicOk(p) {
+  const fd = fs.openSync(p, 'r')
+  try {
+    const head = Buffer.alloc(4)
+    if (fs.readSync(fd, head, 0, 4, 0) !== 4) return false
+    if (!head.equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) return false // local file header
+    const st = fs.fstatSync(fd)
+    const tailLen = Math.min(65557, st.size) // EOCD max 22 + comment 65535
+    const tail = Buffer.alloc(tailLen)
+    if (fs.readSync(fd, tail, 0, tailLen, st.size - tailLen) !== tailLen) return false
+    return tail.includes(Buffer.from([0x50, 0x4b, 0x05, 0x06])) // end of central directory
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+if (!zipMagicOk(ZIP_TMP)) {
+  log('  zip magic check FAILED: archive is not a ZIP (PK signatures missing)')
+  process.exit(1)
+}
+log('  zip magic check: PK\x03\x04 head + PK\x05\x06 EOCD OK')
+const unzipCheck = spawnSync('unzip', ['-t', ZIP_TMP], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+if (unzipCheck.error && unzipCheck.error.code === 'ENOENT') {
+  log('  unzip not on PATH — skipping CRC pass (magic check only)')
+} else if (unzipCheck.status !== 0) {
+  log(`  unzip -t FAILED:\n${String(unzipCheck.stderr).slice(0, 2000)}`)
+  process.exit(1)
+} else {
+  log('  unzip -t: CRC OK')
+}
+
 // Atomic publish: expose the real name only after a clean verify, then prune
 // packages of older versions so dist/ never holds two confusingly-similar zips.
+// The old file at the real path is removed only after the .partial has passed
+// every check, so the real path never points at an unverified archive (and
+// Windows rename does not replace an existing file).
+fs.rmSync(ZIP, { force: true })
 fs.renameSync(ZIP_TMP, ZIP)
 for (const f of fs.readdirSync(DIST)) {
   if (f.endsWith('-green.zip') && f !== path.basename(ZIP)) {
