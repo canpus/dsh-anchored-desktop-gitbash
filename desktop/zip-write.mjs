@@ -22,8 +22,11 @@ function dosTime(ms) {
 // Write <rootDir> as a zip at <zipPath> with every entry prefixed "<prefix>/".
 // Streams to disk (local headers + data first, central directory + EOCD last);
 // returns the number of entries written. Deflate level 6, stored when deflate
-// does not shrink (electron.exe & co are already compressed). No ZIP64 — if the
-// entry count ever approaches 65535 or the archive 4GB this must be revisited.
+// does not shrink (electron.exe & co are already compressed). The staging tree
+// has 81k+ entries, so a ZIP64 EOCD record + locator are written when the
+// classic 16-bit entry-count field would overflow (0xFFFF), per the ZIP spec.
+// Per-entry ZIP64 extra fields are NOT emitted — fail fast if the archive ever
+// approaches 4GB (local-header offsets are 32-bit).
 export function writeZip(rootDir, zipPath, prefix) {
   const entries = []
   const walk = (dir, rel) => {
@@ -112,14 +115,40 @@ export function writeZip(rootDir, zipPath, prefix) {
       put(Buffer.concat([h, c.nameB]))
     }
     const cdSize = offset - cdStart
+    if (cdStart >= 0xfffffffe) throw new Error('archive approaches 4GB — per-entry ZIP64 extra fields not implemented')
+    // ZIP64: classic EOCD entry-count is 16-bit. With 81k+ staged entries the
+    // real counts go into a ZIP64 EOCD record (+ locator) and the classic
+    // fields are saturated at 0xFFFF per spec (a hard crash here burned a full
+    // 10-minute zip write once — count is checked via needZip64, not assumed).
+    const needZip64 = central.length >= 0xffff || cdSize >= 0xffffffff || cdStart >= 0xffffffff
+    if (needZip64) {
+      const z = Buffer.alloc(56)
+      z.writeUInt32LE(0x06064b50, 0)
+      z.writeBigUInt64LE(44n, 4)   // size of the rest of this record
+      z.writeUInt16LE(45, 12)      // version made by: 4.5
+      z.writeUInt16LE(45, 14)      // version needed
+      z.writeUInt32LE(0, 16)       // this disk
+      z.writeUInt32LE(0, 20)       // disk with CD start
+      z.writeBigUInt64LE(BigInt(central.length), 24)
+      z.writeBigUInt64LE(BigInt(central.length), 32)
+      z.writeBigUInt64LE(BigInt(cdSize), 40)
+      z.writeBigUInt64LE(BigInt(cdStart), 48)
+      put(z)
+      const loc = Buffer.alloc(20)
+      loc.writeUInt32LE(0x07064b50, 0)
+      loc.writeUInt32LE(0, 4)      // disk with the zip64 EOCD
+      loc.writeBigUInt64LE(BigInt(offset) - 56n, 8)
+      loc.writeUInt32LE(1, 16)     // total disks
+      put(loc)
+    }
     const eocd = Buffer.alloc(22)
     eocd.writeUInt32LE(0x06054b50, 0)
     eocd.writeUInt16LE(0, 4)        // disk number
     eocd.writeUInt16LE(0, 6)        // central directory start disk
-    eocd.writeUInt16LE(central.length, 8)
-    eocd.writeUInt16LE(central.length, 10)
-    eocd.writeUInt32LE(cdSize, 12)
-    eocd.writeUInt32LE(cdStart, 16)
+    eocd.writeUInt16LE(needZip64 ? 0xffff : central.length, 8)
+    eocd.writeUInt16LE(needZip64 ? 0xffff : central.length, 10)
+    eocd.writeUInt32LE(cdSize >= 0xffffffff ? 0xffffffff : cdSize, 12)
+    eocd.writeUInt32LE(cdStart >= 0xffffffff ? 0xffffffff : cdStart, 16)
     eocd.writeUInt16LE(0, 20)       // comment length
     put(eocd)
     return central.length
@@ -145,11 +174,22 @@ export function listZipNames(zipPath) {
     }
     if (i < 0) throw new Error('EOCD not found — archive is not a zip')
     const e = tail.subarray(i, i + 22)
-    const entTotal = e.readUInt16LE(10)
-    const cdSize = e.readUInt32LE(12)
-    const cdOff = e.readUInt32LE(16)
+    let entTotal = e.readUInt16LE(10)
+    let cdSize = e.readUInt32LE(12)
+    let cdOff = e.readUInt32LE(16)
     if (entTotal === 0xffff || cdSize === 0xffffffff || cdOff === 0xffffffff) {
-      throw new Error('zip64 archive — this reader does not support it')
+      // ZIP64: the locator sits in the 20 bytes right before the classic EOCD
+      // and points at the ZIP64 EOCD record holding the real 64-bit values.
+      if (i < 20) throw new Error('zip64 archive but locator truncated')
+      const loc = tail.subarray(i - 20, i)
+      if (loc.readUInt32LE(0) !== 0x07064b50) throw new Error('zip64 archive but locator missing')
+      const z64Off = Number(loc.readBigUInt64LE(8))
+      const z = Buffer.alloc(56)
+      fs.readSync(fd, z, 0, 56, z64Off)
+      if (z.readUInt32LE(0) !== 0x06064b50) throw new Error('zip64 EOCD record missing')
+      entTotal = Number(z.readBigUInt64LE(32))
+      cdSize = Number(z.readBigUInt64LE(40))
+      cdOff = Number(z.readBigUInt64LE(48))
     }
     const cd = Buffer.alloc(cdSize)
     fs.readSync(fd, cd, 0, cdSize, cdOff)
