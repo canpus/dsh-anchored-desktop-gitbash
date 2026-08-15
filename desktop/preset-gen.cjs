@@ -8,6 +8,11 @@
 //   router-standard  reviewed router template (upstream
 //                    yjh051108/dsh-router-standard @5737535, MIT + NOTICE),
 //                    copied verbatim — kept author-original for A/B testing.
+//   minimal-gitbash  reviewed Windows minimal variant (upstream
+//                    lices/dsh-gitbash-preset @0.1.1, MIT) — official-minimal
+//                    persona + str_replace_editor surface with bash routed
+//                    through Git-for-Windows bash (sandbox-gated, no bypass),
+//                    copied verbatim.
 'use strict'
 
 const fs = require('node:fs')
@@ -17,6 +22,7 @@ const os = require('node:os')
 const presetsRoot = () => path.join(os.homedir(), '.dsh', '.agent-presets')
 const fcChildDir = () => path.join(presetsRoot(), 'fc-child')
 const routerDir = () => path.join(presetsRoot(), 'router-standard')
+const gitbashDir = () => path.join(presetsRoot(), 'minimal-gitbash')
 
 // Inject `agentOptions.model` into the subagent spawn/fork rows. The template
 // rows are indented 8 spaces; `\s+` matches any indentation so minor upstream
@@ -77,4 +83,19 @@ function installRouterPreset({ desktopDir } = {}) {
   return routerDir()
 }
 
-module.exports = { generateFcChild, installRouterPreset, fcChildDir, routerDir }
+// Install the reviewed minimal-gitbash preset (upstream
+// lices/dsh-gitbash-preset @0.1.1, MIT bundled) from the bundled template,
+// verbatim. The executor auto-detects Git-for-Windows bash (GIT_BASH → install
+// roots → PATH) and gates commands on danger-full-access — author-original, no
+// local drift. The preset group disables itself on non-win32.
+function installMinimalGitbash({ desktopDir } = {}) {
+  const base = desktopDir || __dirname
+  const templateDir = path.join(base, 'presets', 'minimal-gitbash')
+  fs.mkdirSync(gitbashDir(), { recursive: true })
+  for (const f of ['agent.cordis.yml', 'preset.yml', 'gitbash-executor.mjs']) {
+    fs.copyFileSync(path.join(templateDir, f), path.join(gitbashDir(), f))
+  }
+  return gitbashDir()
+}
+
+module.exports = { generateFcChild, installRouterPreset, installMinimalGitbash, fcChildDir, routerDir, gitbashDir }

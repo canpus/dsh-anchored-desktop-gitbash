@@ -499,7 +499,7 @@ async function pollNotifications() {
 // official default-preset switch, all driven from the shell (the official
 // per-session switcher UI is disabled via --patch).
 const os = require('node:os')
-const { generateFcChild, installRouterPreset, fcChildDir } = require('./preset-gen.cjs')
+const { generateFcChild, installRouterPreset, installMinimalGitbash, fcChildDir } = require('./preset-gen.cjs')
 
 // Generate the ONE user preset `fc-child` (display name「自定义子模型」) from
 // the bundled anchored-standard template with the child-model agentOptions
@@ -614,6 +614,7 @@ ipcMain.handle('model-dialog:set-default', async (_e, { agentPreset }) => {
     writeFcChild(fallback || 'deepseek-v4-flash')
   }
   if (agentPreset === 'router-standard') installRouterPreset({ desktopDir: __dirname })
+  if (agentPreset === 'minimal-gitbash') installMinimalGitbash({ desktopDir: __dirname })
   await httpRpc('settings.update', { ns: 'agent-presets', patch: { default: agentPreset } })
   await syncBlankSessionsTo(agentPreset)
   return { ok: true }
@@ -627,6 +628,7 @@ ipcMain.handle('model-dialog:set-default', async (_e, { agentPreset }) => {
 ipcMain.handle('model-dialog:apply', async (_e, { enableFc, modelId, presetId }) => {
   if (!enableFc) {
     if (presetId === 'router-standard') installRouterPreset({ desktopDir: __dirname })
+    if (presetId === 'minimal-gitbash') installMinimalGitbash({ desktopDir: __dirname })
     await httpRpc('settings.update', { ns: 'agent-presets', patch: { default: presetId || 'standard' } })
     await syncBlankSessionsTo(presetId || 'standard')
     return { ok: true }
