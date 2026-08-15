@@ -175,7 +175,11 @@ sh(TAR, ['-a', '--format', 'zip', '-c', '-f', ZIP_TMP, '-C', DIST, path.basename
 
 // ---- verify ----
 log('verify zip contents')
-const list = spawnSync(TAR, ['-tf', ZIP_TMP], { encoding: 'utf8', shell: process.platform === 'win32', maxBuffer: 512 * 1024 * 1024 })
+// NO shell:true — cmd.exe pipes in the console codepage (GBK on Chinese
+// Windows) and bsdtar transcodes non-ASCII entry names to it, so a UTF-8
+// filename like 用户指南.md would list as mojibake and fail the has() check
+// (observed: v0.3.8 first build). A direct spawn keeps raw UTF-8 bytes.
+const list = spawnSync(TAR, ['-tf', ZIP_TMP], { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024 })
 if (list.status !== 0) throw new Error('tar list failed')
 const entries = list.stdout.split(/\r?\n/).filter(Boolean)
 const has = (suffix) => entries.some((e) => e.replace(/\\/g, '/').endsWith(suffix))
