@@ -15,7 +15,14 @@ AGENTS/
 /AGENTS.md
 *实测*.md
 
-# ---- 台账（两本账随库管理；红线：不得进 zip 包——staging 只取 repo/ + desktop/，项目根天然排除）----
+# ---- 台账（不入 Git：公开仓库 + 决策路径保密 + "永不回改"与脱敏冲突；防丢 = 本地时间戳备份 台账备份/；红线：不得进 zip 包——staging 只取 repo/ + desktop/，项目根天然排除）----
+/History_log.md
+/Current_State.md
+/台账备份/
+
+# ---- 阶段实施计划（plan_v*.md 不入 Git；根目录保留最近 3 版，更早移入 计划/；同样不进 zip 包）----
+plan_v*.md
+计划/
 
 # ---- 日志 ----
 *.log
