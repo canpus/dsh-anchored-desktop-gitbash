@@ -23,3 +23,6 @@ docs/*.log
 
 # ---- 壳运行时状态（缩放级别等，不入库）----
 desktop/shell-state.json
+
+# ---- 升级失败报告（本机运行产物）----
+upgrade-report-*.md
