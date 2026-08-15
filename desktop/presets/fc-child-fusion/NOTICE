@@ -1,0 +1,33 @@
+fc-child-fusion (the template generated into the user preset `fc-child`)
+combines three sources, all MIT:
+
+1. dsh-anchored-standard (xiaobright/dsh-anchored-standard)
+   — tool-bootstrap.mjs and the Standard-based composition (persona,
+     agent-instructions, tool rows, planning, compaction, delegation).
+   https://github.com/xiaobright/dsh-anchored-standard
+   The anchored-standard NOTICE: it includes an adapted copy of the DeepSeek
+   Harness Standard agent preset from
+   https://github.com/deepseek-ai/deepseek-harness
+   commit 47f943859bef60e4160492346772ded9b24f765a (MIT, Copyright (c) 2026
+   DeepSeek).
+
+2. dsh-gitbash-preset (lices/dsh-gitbash-preset) v0.1.1
+   — gitbash-executor.mjs and the gitbash-shell / filesystem groups
+     (the Windows bash-via-Git-Bash executor and the minimal
+     str_replace_editor filesystem).
+   https://github.com/liceses/dsh-gitbash-preset
+   MIT, Copyright (c) 2025 icelily.
+
+3. DeepSeek Harness — the official Minimal persona text ("You are a helpful
+   software engineer assistant.") and the official plugin rows referenced by
+   name.
+
+Local adaptation performed by desktop/preset-gen.cjs at INSTALL time only:
+  - `shellPath` is pinned to the Git-for-Windows bash.exe detected on the
+    target machine (the author's auto-detect misses custom install roots).
+  - `agentOptions.model` is injected on the subagent spawn/fork rows
+    (child-model routing).
+The bundled template files themselves carry no machine-specific values.
+
+The DeepSeek Harness name belongs to its owner. This community project is not
+affiliated with or endorsed by DeepSeek.

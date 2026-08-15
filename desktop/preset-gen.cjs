@@ -2,9 +2,12 @@
 // dialog) and CLI maintenance. Generates user presets under ~/.dsh/.agent-presets/
 // from the bundled templates under desktop/presets/.
 //
-//   fc-child         anchored-standard template (upstream
-//                    xiaobright/dsh-anchored-standard @6472c1c) + child-model
-//                    agentOptions injected on the spawn/fork subagent rows.
+//   fc-child         fc-child-fusion template — the gitbash-minimal anchor
+//                    (first request: bash(GitBash) + str_replace_editor +
+//                    1024 cap + no AGENTS/skill injections) fused with the
+//                    anchored-standard promotion phase (first tool/call OR
+//                    first assistant message → full Standard catalog + AGENTS
+//                    resume) + child-model agentOptions on spawn/fork rows.
 //   router-standard  reviewed router template (upstream
 //                    yjh051108/dsh-router-standard @5737535, MIT + NOTICE),
 //                    copied verbatim — kept author-original for A/B testing.
@@ -41,28 +44,46 @@ function injectChildModel(src, modelId) {
 }
 
 // Generate the ONE dynamic user preset `fc-child` (display name「自定义子模型」)
-// from the bundled anchored-standard template. Re-applying a model re-derives
-// everything from the current template.
+// from the bundled fc-child-fusion template — the gitbash-minimal anchor fused
+// with the anchored-standard promotion phase. Re-applying a model re-derives
+// everything from the current template; the preset dir is wiped first so
+// generations never leave stale plugin files behind.
 function generateFcChild(modelId, { desktopDir } = {}) {
   const base = desktopDir || __dirname
-  const templateDir = path.join(base, 'presets', 'anchored-standard')
-  const src = fs.readFileSync(path.join(templateDir, 'agent.cordis.yml'), 'utf8')
-  const out = injectChildModel(src, modelId)
+  const templateDir = path.join(base, 'presets', 'fc-child-fusion')
+  let src = fs.readFileSync(path.join(templateDir, 'agent.cordis.yml'), 'utf8')
+  src = injectChildModel(src, modelId)
+  // Pin the gitbash executor to the bash.exe found on THIS machine (the
+  // author's auto-detect misses custom install roots like D:\Git whose bin
+  // dirs are not on the raw Windows PATH). Fail loud if the pattern does not
+  // match — a silent no-op would ship the broken auto-detect again.
+  const bash = findGitBash()
+  if (bash) {
+    const eol = src.includes('\r\n') ? '\r\n' : '\n'
+    const pinned = src.replace(
+      /(name: \.\/gitbash-executor\.mjs[^\r\n]*\r?\n[ \t]+config:[^\r\n]*\r?\n)/,
+      `$1        shellPath: '${bash}'${eol}`,
+    )
+    if (pinned === src || !pinned.includes(`shellPath: '${bash}'`)) {
+      throw new Error('generateFcChild: failed to pin shellPath into the gitbash-executor config block')
+    }
+    src = pinned
+  }
+  fs.rmSync(fcChildDir(), { recursive: true, force: true })
   fs.mkdirSync(fcChildDir(), { recursive: true })
-  fs.writeFileSync(path.join(fcChildDir(), 'agent.cordis.yml'), out)
-  // The preset-local plugin ships by relative path from the composition —
-  // copy it verbatim so the preset keeps working standalone. The old
+  fs.writeFileSync(path.join(fcChildDir(), 'agent.cordis.yml'), src)
+  // The preset-local plugins ship by relative path from the composition —
+  // copy them verbatim so the preset keeps working standalone. The old
   // first-prompt-filter plugin was absorbed upstream (suppressedContextSources
-  // in tool-bootstrap) — drop any leftover copy from earlier generations.
-  for (const plugin of ['tool-bootstrap.mjs']) {
+  // in tool-bootstrap) — the wiped dir takes care of any leftover copy.
+  for (const plugin of ['tool-bootstrap.mjs', 'gitbash-executor.mjs']) {
     fs.copyFileSync(path.join(templateDir, plugin), path.join(fcChildDir(), plugin))
   }
-  fs.rmSync(path.join(fcChildDir(), 'first-prompt-filter.mjs'), { force: true })
   fs.writeFileSync(
     path.join(fcChildDir(), 'preset.yml'),
     [
       'name: 自定义子模型',
-      'description: 基于社区 Anchored Standard 方案（V4Pro 锚定：首轮 Minimal 轨迹 = persona 对齐 + shell/read 工具目录 + 1024 输出封顶 + 无自动注入；首个工具调用或首个回复后恢复 Standard 全量工具与上下文注入）+ 子 Agent 默认模型可自选（在窗口标题栏「子 Agent 模型」中设置）；其余能力与标准模式一致。',
+      'description: 融合预设（GitBash 锚定 + 开放升级）：首轮 = 官方极简对（bash(GitBash) + str_replace_editor）+ 1024 输出封顶 + 无 AGENTS/skill 注入（锚定出 V4Pro 新型思维链）；首个工具调用或首条回复后 = 全量 Standard 工具（subagent 全家/pwsh/web/todo/skill 等）+ AGENTS 恢复注入。bash 经 Git-for-Windows 执行，需会话沙箱为「完全访问」（或按提示单次升级）。子 Agent 默认模型在窗口标题栏「子 Agent 模型」中设置。',
       'order: 5',
     ].join('\n') + '\n',
   )
