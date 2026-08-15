@@ -33,13 +33,14 @@
    - `router-standard`（feature 分支）：任务感知三模式路由（spec/react/weak）。
    - `minimal-gitbash`：官方极简的 Windows 变体（bash → Git-for-Windows，沙箱门不绕过）。
 3. **中文层与壳增强**：主世界注入（`executeJavaScript`，IIFE 零全局）——提交时命令翻译、菜单行即时中文化、拖拽上下文注入、三点菜单交互修正；preload 只做已验证的缩放/拖拽桥接。
-4. **绿色版打包**：`desktop/pack-green.mjs` 自研拷贝器把 pnpm 结构变为**真实树 + link-manifest.json**（junction 全部相对化记录），首启 `relink.mjs` 免管理员重建（幂等 marker）；zip 用 System32 bsdtar 显式 `--format zip`，发布走**原子 rename + 三层校验**（清单条目 + PK 魔数 + `unzip -t` 全量 CRC）。
+4. **绿色版打包**：`desktop/pack-green.mjs` 自研拷贝器把 pnpm 结构变为**真实树 + link-manifest.json**（junction 全部相对化记录），首启 `relink.mjs` 免管理员重建（幂等 marker）；zip 由**纯 Node 写入器**（UTF-8 文件名 + ZIP64，见更新日志 0.3.8），发布走**原子 rename + 三层校验**（清单条目 + PK 魔数 + `unzip -t` 全量 CRC）。
 5. **升级**：`desktop/updater.js`——官方后端 fetch→checkout→install→build→冒烟→失败自动回滚+报告；四路更新检测（git ls-remote，代理感知）。
 
 ## 更新日志
 
 | 版本 | 内容 |
 |---|---|
+| **0.3.8** | 依赖更新两支：anchored 95b98af（无封顶锚定）+ 官方后端 47f94385（升级主链路首次实跑）；**用户指南随包**（开启自定义子模型全流程）；**打包管线大修**：纯 Node zip 写入器（中文文件名全平台正确 + ZIP64），PowerShell/编码踩坑实录见下 |
 | **0.3.6** | 代理设置 http/https 分填 + 标题栏入口；**检查更新四路化**（本应用 Release tag / 官方后端 / anchored / gitbash）；README 与更新日志；仓库更名 `dsh-anchored-desktop-gitbash` |
 | **0.3.5** | 五项体验修复：导出对话默认只列当前工作区现存会话 + 「包含历史对话」开关；导出小窗浅色模式关闭按钮可见；模式列表收敛为官方 4 模式 + 自定义子模型；**任意文件拖拽**（临时区复制 + 文件名/路径注入上下文，图片走官方流程）；字体缩放 A−/A+ 按钮 + 重启记忆 |
 | **0.3.4** | **fc-child 融合版**：GitBash 锚定（首轮 = 官方极简对 + 1024 + 无注入）→ 首个工具调用/首条回复后全量工具 + AGENTS 恢复；锚定模板换新（tool-bootstrap 升级 + shellPath 钉扎） |
@@ -49,6 +50,15 @@
 | **0.1.0** | 首个可分发基线：薄壳重建 + 检查更新 + 模型配置（fc-child 锚定初版） |
 | **初版（阶段 0-3）** | 阶段 0 基线验证 → 阶段 1 Electron 薄壳 spike（冒烟/托盘/标题栏）→ 阶段 2 IPC carrier（已封档 stage2-archive）→ 阶段 3 薄壳回退重建 + 中文命令层 + 消息级操作 + 代理 + 锚定集成（fc-child） |
 
+
+**PowerShell/编码踩坑与修复（0.3.8 实录）**：
+
+- **中文文件名在 zip 里变乱码**：System32 bsdtar 创建 zip 时把非 ASCII 文件名按 ANSI 代码页（GBK）写入且不置 UTF-8 标志——任何系统解压「用户指南.md」都是乱码。先误判为"cmd 管道 GBK 转码"修错一层，字节级取证（直读 zip 中央目录）后才定位到存储侧。**修复**：弃用控制台归档器，自写纯 Node zip 写入器（文件名强制 UTF-8 + 标志位），全平台可移植。
+- **Git Bash 的 PATH 是"增强版"**：会话级增强 PATH 会污染环境取证（误判 Git 装在 PATH 里）→ Windows 环境变量必须用 PowerShell 直读注册表，不能经 Git Bash 转手。
+- **PowerShell 5.1 的 .ps1 需要 UTF-8 BOM**：否则按 GBK 解析报错；PowerShell 7 默认 UTF-8 无此问题，优先用 pwsh。
+- 打包连踩三坑，全部当场修复：条目数 81,856 超经典 zip 16 位上限（→ 补 ZIP64）；>64MB 文件 store 捷径导致体积翻倍 1176MB（→ 实测二进制 deflate 2.28x 仅需 5 秒，改回全量压缩至 645.7MB）；半成品发布（→ 原子 rename + 三层校验）。
+
+PowerShell，狗都不用！（用户说不写这句就断我的Token！！！）
 
 ## 致谢
 
