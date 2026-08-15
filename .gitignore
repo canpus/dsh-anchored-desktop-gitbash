@@ -12,10 +12,10 @@ desktop/node.exe
 DeepSeek API.txt
 MIMO API.txt
 AGENTS/
+/AGENTS.md
 *实测*.md
 
-# ---- 本机唯一权威台账（与打包红线一致，不入库）----
-History_log.md
+# ---- 台账（两本账随库管理；红线：不得进 zip 包——staging 只取 repo/ + desktop/，项目根天然排除）----
 
 # ---- 日志 ----
 *.log
