@@ -21,12 +21,12 @@ function dosTime(ms) {
 
 // Write <rootDir> as a zip at <zipPath> with every entry prefixed "<prefix>/".
 // Streams to disk (local headers + data first, central directory + EOCD last);
-// returns the number of entries written. Deflate level 6, stored when deflate
-// does not shrink (electron.exe & co are already compressed). The staging tree
-// has 81k+ entries, so a ZIP64 EOCD record + locator are written when the
-// classic 16-bit entry-count field would overflow (0xFFFF), per the ZIP spec.
-// Per-entry ZIP64 extra fields are NOT emitted — fail fast if the archive ever
-// approaches 4GB (local-header offsets are 32-bit).
+// returns the number of entries written. Deflate level 6, stored only when
+// deflate does not shrink. The staging tree has 81k+ entries, so a ZIP64 EOCD
+// record + locator are written when the classic 16-bit entry-count field would
+// overflow (0xFFFF), per the ZIP spec. Per-entry ZIP64 extra fields are NOT
+// emitted — fail fast if the archive ever approaches 4GB (local-header offsets
+// are 32-bit).
 export function writeZip(rootDir, zipPath, prefix) {
   const entries = []
   const walk = (dir, rel) => {
@@ -78,12 +78,14 @@ export function writeZip(rootDir, zipPath, prefix) {
       let data = Buffer.alloc(0)
       if (!e.dir) {
         const raw = fs.readFileSync(e.full)
-        // Huge files (electron.exe & friends) are already-compressed binaries:
-        // deflate rarely helps and costs real CPU — store them as-is.
-        const def = raw.length > 64 * 1024 * 1024 ? null : zlib.deflateRawSync(raw, { level: 6 })
+        // Always attempt deflate: native binaries compress ~2x too (measured:
+        // electron.exe 215MB -> 94MB at level 6 in ~5s). A size-based store
+        // shortcut was tried first and it doubled the package (1176MB vs
+        // 640MB, v0.3.8 build 4) — store only when deflate does not shrink.
+        const def = zlib.deflateRawSync(raw, { level: 6 })
         crc = zlib.crc32(raw) >>> 0
         usize = raw.length
-        if (def && def.length < raw.length) { method = 8; csize = def.length; data = def } else { method = 0; csize = raw.length; data = raw }
+        if (def.length < raw.length) { method = 8; csize = def.length; data = def } else { method = 0; csize = raw.length; data = raw }
       }
       const localOff = offset
       put(localHeader(nameB, method, crc, csize, usize, t))
