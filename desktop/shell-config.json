@@ -1,0 +1,29 @@
+{
+  "_comment": "Shell interface config for the thin shell. startCommand pins --host/--port explicitly so upstream default-port changes cannot break the shell. Fields are auto-adapted by the updater (desktop/updater.js); do not hand-edit unless running a local experiment.",
+  "repoPath": "../repo",
+  "startCommand": [
+    "node",
+    "--import",
+    "tsx/esm",
+    "apps/cli/src/bin.ts",
+    "web",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "3080"
+  ],
+  "modelPatch": "agent-models.patch.yml",
+  "port": 3080,
+  "ready": {
+    "path": "/",
+    "status": 200,
+    "titleContains": "DeepSeek Harness"
+  },
+  "notifyOnSettle": false,
+  "proxy": "",
+  "upstream": {
+    "remote": "origin",
+    "branch": "master",
+    "lockedCommit": "47f9438"
+  }
+}

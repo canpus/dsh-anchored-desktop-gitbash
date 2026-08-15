@@ -1,0 +1,39 @@
+{
+  "_comment": "官方英文斜杠命令 → 壳层中文名。英文命令名是官方单一事实源（2026-08-15 源码级查证，commit 47f9438）：host 侧注册表仅 compact/feedback/goal/permission/plan/export 六个，另有客户端命令菜单贡献 model（/model 选项框）。官方无 alias 机制，中文名与描述为本项目自定翻译；enDescription 为官方 description 原文（用于菜单显示层精确替换）。上游升级后需重新核对命令清单。",
+  "commands": {
+    "compact": {
+      "zh": "压缩",
+      "description": "压缩较早的对话历史",
+      "enDescription": "Compact older conversation history"
+    },
+    "feedback": {
+      "zh": "反馈",
+      "description": "记录对本会话的反馈",
+      "enDescription": "record feedback about this session"
+    },
+    "goal": {
+      "zh": "目标",
+      "description": "设置或查看长期任务的目标",
+      "enDescription": "set or view the goal for a long-running task"
+    },
+    "permission": {
+      "zh": "权限",
+      "description": "切换权限预设（沙箱模式 + 审批策略）",
+      "enDescription": "Switch the permission preset (sandbox mode + approval policy)"
+    },
+    "plan": {
+      "zh": "计划",
+      "description": "进入或退出计划模式",
+      "enDescription": "Enter or leave plan mode"
+    },
+    "export": {
+      "zh": "导出",
+      "description": "将会话日志下载为 ZIP 压缩包",
+      "enDescription": "Download this Session log as a ZIP archive"
+    },
+    "model": {
+      "zh": "模型",
+      "description": "选择本会话使用的模型"
+    }
+  }
+}

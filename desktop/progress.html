@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>upgrade</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    body {
+      background: #0f172a; color: #e2e8f0;
+      font-family: "Segoe UI", "Microsoft YaHei", monospace, sans-serif;
+      font-size: 12px; padding: 12px; user-select: none;
+    }
+    #steps { white-space: pre-wrap; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <div id="steps">升级进行中……</div>
+  <script>
+    const el = document.getElementById('steps')
+    el.textContent = ''
+    try {
+      window.dshShell && window.dshShell.onStep((text) => { el.textContent += text + '\n' })
+    } catch (e) { /* preload missing */ }
+  </script>
+</body>
+</html>

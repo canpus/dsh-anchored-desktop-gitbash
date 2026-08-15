@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>export</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    body {
+      background: #0f172a; color: #e2e8f0;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      font-size: 13px; display: flex; flex-direction: column; user-select: none;
+    }
+    header { padding: 10px 12px 6px; font-weight: 600; }
+    .main { flex: 1; display: flex; overflow: hidden; }
+    .col { flex: 1; padding: 0 12px; overflow-y: auto; }
+    .item {
+      display: block; width: 100%; text-align: left;
+      background: #1e293b; border: 1px solid rgba(255,255,255,.14);
+      color: #e2e8f0; border-radius: 5px; padding: 7px 10px; margin-bottom: 6px;
+      cursor: pointer; font-size: 12px; box-sizing: border-box;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .item:hover { background: #28354a; }
+    .item.selected { border-color: #4d6bfe; background: #223057; }
+    .item.disabled { opacity: .4; cursor: not-allowed; }
+    .note { padding: 4px 12px 8px; font-size: 11px; opacity: .65; line-height: 1.5; }
+    #status { padding: 6px 12px; font-size: 12px; min-height: 16px; }
+    #status.ok { color: #4ade80; }
+    #status.err { color: #f87171; }
+    .btn-row { display: flex; justify-content: flex-end; padding: 4px 12px 10px; gap: 8px; }
+    .btn {
+      background: #4d6bfe; border: none; color: #fff; border-radius: 5px;
+      padding: 6px 14px; font-size: 12px; cursor: pointer;
+    }
+    .btn.ghost { background: transparent; border: 1px solid rgba(255,255,255,.25); }
+  </style>
+</head>
+<body>
+  <header>导出对话 PDF — 选择会话（完整对话内容）</header>
+  <div class="main">
+    <div class="col">
+      <div id="sessions"><div class="item disabled">加载中…</div></div>
+    </div>
+  </div>
+  <div class="note">导出该会话的完整消息记录（用户/助手全部消息，含时间戳）为 PDF。</div>
+  <div id="status"></div>
+  <div class="btn-row">
+    <button class="btn ghost" id="btn-close">关闭</button>
+    <button class="btn" id="btn-export">导出</button>
+  </div>
+  <script>
+    const $sessions = document.getElementById('sessions')
+    const $status = document.getElementById('status')
+    let state = { sessions: [], selected: null }
+
+    function setStatus(text, cls) { $status.textContent = text; $status.className = cls || '' }
+
+    function renderSessions() {
+      $sessions.innerHTML = ''
+      if (state.sessions.length === 0) {
+        $sessions.innerHTML = '<div class="item disabled">没有可导出的对话</div>'
+        return
+      }
+      for (const s of state.sessions) {
+        const d = new Date(s.updatedAt)
+        const when = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+        const el = document.createElement('div')
+        el.className = 'item' + (s.sessionId === state.selected ? ' selected' : '')
+        el.textContent = `${s.title} · ${when}`
+        el.title = s.title
+        el.onclick = () => { state.selected = s.sessionId; renderSessions() }
+        $sessions.appendChild(el)
+      }
+    }
+
+    document.getElementById('btn-close').onclick = () => window.dshShell.close()
+    document.getElementById('btn-export').onclick = async () => {
+      if (!state.selected) { setStatus('请先选择一个会话', 'err'); return }
+      const s = state.sessions.find((x) => x.sessionId === state.selected)
+      setStatus('正在导出（大对话可能需要一会儿）…')
+      try {
+        const r = await window.dshShell.export(state.selected, s.title)
+        if (r.canceled) { setStatus('已取消'); return }
+        setStatus(`✓ 已导出：${r.filePath}`, 'ok')
+      } catch (e) { setStatus('✗ 导出失败：' + e, 'err') }
+    }
+
+    ;(async () => {
+      try {
+        state = await window.dshShell.getSessions()
+        renderSessions()
+      } catch (e) { setStatus('✗ 加载失败：' + e, 'err') }
+    })()
+    try {
+      window.dshShell.onTheme((t) => {
+        document.body.style.background = t === 'light' ? '#f8fafc' : '#0f172a'
+        document.body.style.color = t === 'light' ? '#0f172a' : '#e2e8f0'
+      })
+    } catch (e) { /* preload missing */ }
+  </script>
+</body>
+</html>

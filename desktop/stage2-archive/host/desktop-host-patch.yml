@@ -1,0 +1,97 @@
+# Desktop host surface over the dsh-base layer.
+# Mirrors the relevant web-app rows (coding persona, storage, workspace,
+# directory picker, API gateway) and deliberately omits the web surface rows:
+# webserver, web-runtime, client-hmr, modules, connection. Zero ports.
+
+- id: system-prompt
+  config:
+    persona: >-
+      You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.
+
+# No watcher in the desktop surface, and the HMR plugin needs the Node
+# internal loader interface this embedder does not provide (the web bundle
+# disables it too).
+- id: hmr
+  disabled: true
+
+- id: session-query-sqlite
+  config:
+    path: ':memory:'
+    openAt: never
+
+- id: tools
+  config:
+    mode: !!js process.env.DSH_TOOLS_MODE
+
+- insert:
+    - id: code-runtime
+      name: '@deepseek-ai/dsh-code-runtime-worker-thread'
+
+    - id: storage
+      name: '@deepseek-ai/dsh-storage'
+
+    - id: storage-json
+      name: '@deepseek-ai/dsh-storage-json'
+      config:
+        root: !!js dshHomePath('storages')
+
+    - id: storage-domain
+      name: '@deepseek-ai/dsh-storage-domain'
+      config:
+        backend: json
+
+    - id: message-feedback
+      name: '@deepseek-ai/dsh-message-feedback'
+      config:
+        maxNoteBytes: 8192
+
+    - id: workspace
+      name: '@deepseek-ai/dsh-workspace'
+
+    - id: session-projection-cache
+      name: '@deepseek-ai/dsh-session-projection-cache'
+      config:
+        writeEveryEvents: 200
+        writeIntervalMs: 5000
+
+    - id: session-stats
+      name: '@deepseek-ai/dsh-session-stats'
+
+    # Native OS directory chooser is provided by the desktop assembly's own
+    # plugin (desktop-picker.mjs, mounted in host-boot.mjs): the official
+    # -native backend spawns a child process with process.execPath
+    # (electron.exe here) whose koffi COM addon crashes in Electron's Node.
+    # The -auto variant is out too (it needs the webserver it detects).
+    # - id: directory-picker
+    #   name: '@deepseek-ai/dsh-host-directory-picker-native'
+
+    - id: plugin-inventory
+      name: '@deepseek-ai/dsh-host-plugin-inventory'
+
+    - id: api-gateway
+      name: '@deepseek-ai/dsh-host-apiproxy'
+
+    # Host half of the Remote BFF assembly: registers the Typert remote
+    # endpoints (pluginInventory.list, commands, goals, dynamic) on the
+    # /api channel. The web-app bundle mounts it beside its client rows;
+    # omitting it leaves every remote RPC answering "not found".
+    - id: api-remotes
+      name: '@deepseek-ai/dsh-api-remotes'
+
+    - id: cordis-host-runner
+      name: '@deepseek-ai/dsh-cordis-host-runner'
+
+    - id: agent-presets
+      name: '@deepseek-ai/dsh-agent-presets'
+      config:
+        default: standard
+
+# The shipped preset roster is an assembly fact of the installed app
+# (apps/cli/composeProfile patches it in for the CLI). This desktop assembly
+# owns it directly: the writable user root is the package's own default.
+- id: agent-presets
+  config:
+    default: standard
+    roots:
+      - path: 'C:/Users/Canpu/Desktop/DeepSeek_Harness/repo/apps/cli/config/agent-presets'
+        trust: system

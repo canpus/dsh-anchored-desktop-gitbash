@@ -1,0 +1,3 @@
+# Desktop host root config — an empty entry list. The tree is composed as
+# patches: dsh-base bundle rows, then desktop-host-patch.yml. Do not edit.
+[]

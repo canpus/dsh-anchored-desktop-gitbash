@@ -1,0 +1,15 @@
+# Agent model routing patch (project-owned; loaded via --patch from
+# shell-config.json).
+#
+# - The official per-session preset switcher UI (new-session chip + settings
+#   roster + header label) is disabled: ALL preset management moves to the
+#   shell's own "子 Agent 模型" dialog, so every switch is visible to the
+#   shell. The host-side agentPreset.* RPCs stay available and the shell
+#   drives them.
+# - `default` here is only the fallback when no settings default exists; the
+#   live default is owned by settings (official hot-reload) via the shell.
+- id: agent-presets
+  config:
+    default: standard
+- id: ui-agent-preset
+  disabled: true

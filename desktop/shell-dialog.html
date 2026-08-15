@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>dialog</title>
+  <style>
+    :root {
+      --bg: #0f172a; --fg: #e2e8f0; --border: rgba(255,255,255,.25);
+    }
+    body.light {
+      --bg: #f8fafc; --fg: #0f172a; --border: rgba(15,23,42,.25);
+    }
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    body {
+      background: var(--bg); color: var(--fg);
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      font-size: 13px; display: flex; flex-direction: column; padding: 16px;
+      box-sizing: border-box; user-select: none;
+    }
+    #t { font-weight: 600; font-size: 14px; margin-bottom: 10px; }
+    #m { flex: 1; font-size: 12.5px; line-height: 1.6; white-space: pre-wrap;
+      word-break: break-word; opacity: .92; overflow-y: auto; }
+    #m.danger { color: #f87171; font-weight: 600; }
+    .btn-row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+    button {
+      background: #4d6bfe; border: none; color: #fff; border-radius: 5px;
+      padding: 6px 16px; font-size: 12px; cursor: pointer;
+    }
+    button.ghost { background: transparent; border: 1px solid var(--border); color: var(--fg); }
+    button.danger { background: #dc2626; }
+  </style>
+</head>
+<body>
+  <div id="t"></div>
+  <div id="m"></div>
+  <div class="btn-row" id="btns"></div>
+  <script>
+    const $t = document.getElementById('t')
+    const $m = document.getElementById('m')
+    const $btns = document.getElementById('btns')
+    window.dshDialog.onInit(({ title, message, buttons, danger }) => {
+      $t.textContent = title || ''
+      $m.textContent = message || ''
+      if (danger) $m.classList.add('danger')
+      ;(buttons || ['确定']).forEach((label, i) => {
+        const b = document.createElement('button')
+        b.textContent = label
+        if (danger && i === 0) b.classList.add('danger')
+        else if (i > 0) b.classList.add('ghost')
+        b.onclick = () => window.dshDialog.choose(i)
+        $btns.appendChild(b)
+        if (i === 0) b.focus()
+      })
+    })
+    window.dshDialog.onTheme((theme) => {
+      document.body.classList.toggle('light', theme === 'light')
+    })
+  </script>
+</body>
+</html>

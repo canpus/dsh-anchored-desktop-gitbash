@@ -1,0 +1,22 @@
+# ---- 上游与外部素材（不 fork 不重推）----
+repo/
+third-party/
+
+# ---- 构建与打包产物 ----
+dist/
+desktop/node_modules/
+node.exe
+desktop/node.exe
+
+# ---- 凭据与个人素材（永不入库）----
+DeepSeek API.txt
+MIMO API.txt
+AGENTS/
+*实测*.md
+
+# ---- 本机唯一权威台账（与打包红线一致，不入库）----
+History_log.md
+
+# ---- 日志 ----
+*.log
+docs/*.log

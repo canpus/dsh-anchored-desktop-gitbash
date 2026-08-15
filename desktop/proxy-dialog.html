@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>代理设置</title>
+  <style>
+    :root {
+      --bg: #0f172a; --fg: #e2e8f0; --border: rgba(255,255,255,.25); --muted: rgba(226,232,240,.6);
+    }
+    body.light {
+      --bg: #f8fafc; --fg: #0f172a; --border: rgba(15,23,42,.25); --muted: rgba(15,23,42,.6);
+    }
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    body {
+      background: var(--bg); color: var(--fg);
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      font-size: 13px; display: flex; flex-direction: column; padding: 16px;
+      box-sizing: border-box; user-select: none;
+    }
+    #t { font-weight: 600; font-size: 14px; margin-bottom: 10px; }
+    #m { font-size: 12.5px; line-height: 1.6; white-space: pre-wrap;
+      word-break: break-word; opacity: .92; margin-bottom: 12px; color: var(--muted); }
+    input {
+      width: 100%; box-sizing: border-box; padding: 7px 10px; font-size: 12.5px;
+      background: transparent; color: var(--fg);
+      border: 1px solid var(--border); border-radius: 5px; outline: none;
+    }
+    input:focus { border-color: #4d6bfe; }
+    .btn-row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+    button {
+      background: #4d6bfe; border: none; color: #fff; border-radius: 5px;
+      padding: 6px 16px; font-size: 12px; cursor: pointer;
+    }
+    button.ghost { background: transparent; border: 1px solid var(--border); color: var(--fg); }
+  </style>
+</head>
+<body>
+  <div id="t">代理设置</div>
+  <div id="m">为联网搜索、模型 API 与检查更新设置代理地址（留空 = 直连）。\n保存后需重启应用生效。\n例如：http://127.0.0.1:10809</div>
+  <input id="proxy" type="text" placeholder="留空 = 直连" spellcheck="false">
+  <div class="btn-row">
+    <button id="save">保存</button>
+    <button id="cancel" class="ghost">取消</button>
+  </div>
+  <script>
+    const $proxy = document.getElementById('proxy')
+    window.dshProxy.get().then((v) => { $proxy.value = v || ''; $proxy.focus() })
+    document.getElementById('save').onclick = () => window.dshProxy.save($proxy.value)
+    document.getElementById('cancel').onclick = () => window.dshProxy.close()
+    $proxy.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') window.dshProxy.save($proxy.value)
+      if (e.key === 'Escape') window.dshProxy.close()
+    })
+    window.dshProxy.onTheme((theme) => {
+      document.body.classList.toggle('light', theme === 'light')
+    })
+  </script>
+</body>
+</html>

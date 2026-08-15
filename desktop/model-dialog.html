@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>model</title>
+  <style>
+    :root {
+      --bg: #0f172a; --fg: #e2e8f0; --card: #1e293b; --border: rgba(255,255,255,.14);
+      --muted: rgba(226,232,240,.65); --accent: #4d6bfe; --accent-bg: #223057;
+    }
+    body.light {
+      --bg: #f8fafc; --fg: #0f172a; --card: #ffffff; --border: rgba(15,23,42,.12);
+      --muted: rgba(15,23,42,.6); --accent: #4d6bfe; --accent-bg: #e4eaff;
+    }
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    body {
+      background: var(--bg); color: var(--fg);
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      font-size: 13px; display: flex; flex-direction: column; user-select: none;
+    }
+    header { padding: 10px 12px 6px; font-weight: 600; }
+    .main { flex: 1; display: flex; flex-direction: column; overflow-y: auto; padding: 0 12px; }
+    h3 { font-size: 12px; opacity: .8; margin: 8px 0 6px; font-weight: 600; }
+    .item {
+      display: flex; align-items: center; gap: 6px;
+      background: var(--card); border: 1px solid var(--border);
+      color: var(--fg); border-radius: 5px; padding: 6px 10px; margin-bottom: 6px;
+      cursor: pointer; font-size: 12px; box-sizing: border-box;
+    }
+    .item:hover { background: var(--accent-bg); }
+    .item.picked { border-color: var(--accent); }
+    .item .grow { flex: 1; min-width: 0; overflow: hidden; }
+    .item .desc { font-size: 11px; opacity: .7; margin-top: 2px; }
+    .tag {
+      display: inline-block; font-size: 10px; border: 1px solid #4ade80; color: #4ade80;
+      border-radius: 3px; padding: 0 5px; vertical-align: 1px; flex-shrink: 0;
+    }
+    .mini {
+      background: transparent; border: 1px solid var(--border); color: var(--fg);
+      border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer; flex-shrink: 0;
+    }
+    .mini:hover { background: var(--accent-bg); }
+    .mini.danger { border-color: rgba(248,113,113,.5); color: #f87171; }
+    .toggle { position: relative; width: 38px; height: 20px; border-radius: 10px; background: rgba(128,128,128,.35); border: 1px solid var(--border); cursor: pointer; flex-shrink: 0; transition: background .15s; }
+    .toggle.on { background: var(--accent); }
+    .toggle .knob { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: left .15s; }
+    .toggle.on .knob { left: 20px; }
+    .warn {
+      color: #f87171; font-weight: 700; font-size: 12px; line-height: 1.5;
+      background: rgba(248,113,113,.12); border: 1px solid rgba(248,113,113,.4);
+      border-radius: 5px; padding: 8px 10px; margin: 6px 0;
+    }
+    select {
+      width: 100%; background: var(--card); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 5px; padding: 7px 8px; font-size: 12px; margin: 4px 0;
+    }
+    .current { font-size: 11px; opacity: .85; margin: 2px 0; }
+    .note { font-size: 11px; opacity: .7; line-height: 1.5; margin: 6px 0; }
+    #status { padding: 6px 12px; font-size: 12px; min-height: 16px; }
+    #status.ok { color: #4ade80; }
+    #status.err { color: #f87171; }
+    .btn-row { display: flex; justify-content: flex-end; padding: 4px 12px 10px; gap: 8px; }
+    .btn {
+      background: var(--accent); border: none; color: #fff; border-radius: 5px;
+      padding: 6px 14px; font-size: 12px; cursor: pointer;
+    }
+    .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--fg); }
+  </style>
+</head>
+<body>
+  <header>模式切换</header>
+  <div class="main">
+    <h3>官方模式（子 Agent 跟随主模型）</h3>
+    <div id="presets"><div class="item">加载中…</div></div>
+    <h3>自定义子模型</h3>
+    <div id="fc-toggle"></div>
+    <div id="fc-body" style="display:none">
+      <div class="current" id="cur-model"></div>
+      <select id="model-select"></select>
+      <div class="warn">⚠ 应用更改将重启后端，当前正在运行的任务会被中断，请确认没有正在执行的任务。</div>
+    </div>
+    <div class="note">更改在点击「应用」后才会生效；直接关闭窗口则不保存任何修改。</div>
+  </div>
+  <div id="status"></div>
+  <div class="btn-row">
+    <button class="btn ghost" id="btn-close">关闭</button>
+    <button class="btn" id="btn-apply">应用</button>
+  </div>
+  <script>
+    const $presets = document.getElementById('presets')
+    const $fc = document.getElementById('fc-toggle')
+    const $fcBody = document.getElementById('fc-body')
+    const $select = document.getElementById('model-select')
+    const $cur = document.getElementById('cur-model')
+    const $status = document.getElementById('status')
+    const $apply = document.getElementById('btn-apply')
+
+    let state = { groups: [], presets: [], currentModel: null }
+    let draft = { enableFc: false, modelId: null, presetId: 'standard' }
+    const FC = 'fc-child'
+
+    function setStatus(text, cls) { $status.textContent = text; $status.className = cls || '' }
+
+    function renderPresets() {
+      $presets.innerHTML = ''
+      for (const p of state.presets) {
+        if (p.id === FC) continue
+        const isDefault = p.isDefault
+        const row = document.createElement('div')
+        row.className = 'item' + (p.id === draft.presetId && !draft.enableFc ? ' picked' : '')
+        const grow = document.createElement('div')
+        grow.className = 'grow'
+        grow.innerHTML = `<b>${p.name || p.id}</b>${isDefault ? ' <span class="tag">当前</span>' : ''}` + (p.description ? `<div class="desc">${p.description}</div>` : '')
+        row.appendChild(grow)
+        const btnDoc = document.createElement('button')
+        btnDoc.className = 'mini'
+        btnDoc.textContent = '文档'
+        btnDoc.title = '打开该预设的配置文件'
+        btnDoc.onclick = async (ev) => {
+          ev.stopPropagation()
+          try { await window.dshShell.openDocument(p.id, p.trust) } catch (e) { setStatus('✗ 打开失败：' + e, 'err') }
+        }
+        row.appendChild(btnDoc)
+        if (p.trust === 'user') {
+          const btnCopy = document.createElement('button')
+          btnCopy.className = 'mini'
+          btnCopy.textContent = '复制'
+          btnCopy.onclick = async (ev) => {
+            ev.stopPropagation()
+            try {
+              await window.dshShell.copy(p.id, `${p.name || p.id}（副本）`)
+              await refresh()
+              setStatus('✓ 已复制', 'ok')
+            } catch (e) { setStatus('✗ 复制失败：' + e, 'err') }
+          }
+          row.appendChild(btnCopy)
+          const btnDel = document.createElement('button')
+          btnDel.className = 'mini danger'
+          btnDel.textContent = '删除'
+          btnDel.onclick = async (ev) => {
+            ev.stopPropagation()
+            try {
+              await window.dshShell.remove(p.id)
+              await refresh()
+              setStatus('✓ 已删除', 'ok')
+            } catch (e) { setStatus('✗ 删除失败：' + e, 'err') }
+          }
+          row.appendChild(btnDel)
+        }
+        row.onclick = () => {
+          draft.enableFc = false
+          draft.presetId = p.id
+          renderAll()
+        }
+        $presets.appendChild(row)
+      }
+    }
+
+    function renderFcToggle() {
+      $fc.innerHTML = ''
+      const fcRow = state.presets.find((p) => p.id === FC)
+      const isFcNow = !!fcRow && fcRow.isDefault
+      const row = document.createElement('div')
+      row.className = 'item' + (draft.enableFc ? ' picked' : '')
+      const grow = document.createElement('div')
+      grow.className = 'grow'
+      grow.innerHTML = `<b>自定义子模型</b>${isFcNow ? ' <span class="tag">当前</span>' : ''}`
+        + '<div class="desc">与官方「标准模式」完全相同，仅子 Agent 默认使用的模型可由你自选；其余工具、能力与行为均与标准模式一致。</div>'
+      row.appendChild(grow)
+      const tg = document.createElement('div')
+      tg.className = 'toggle' + (draft.enableFc ? ' on' : '')
+      tg.title = draft.enableFc ? '关闭' : '启用'
+      tg.innerHTML = '<div class="knob"></div>'
+      tg.onclick = (ev) => {
+        ev.stopPropagation()
+        draft.enableFc = !draft.enableFc
+        renderAll()
+      }
+      row.appendChild(tg)
+      $fc.appendChild(row)
+    }
+
+    function renderModels() {
+      $fcBody.style.display = draft.enableFc ? '' : 'none'
+      $apply.textContent = draft.enableFc ? '应用（启用自定义子模型）' : '应用（设为默认）'
+      if (!draft.enableFc) return
+      $cur.innerHTML = state.currentModel
+        ? `当前生效：<b>${state.currentModel}</b>（新对话的子 Agent 使用该模型）`
+        : '尚未指定模型（将使用默认模型）'
+      $select.innerHTML = ''
+      for (const g of state.groups) {
+        const og = document.createElement('optgroup')
+        og.label = g.provider
+        for (const m of g.models) {
+          const opt = document.createElement('option')
+          opt.value = m.id
+          opt.textContent = m.chat ? m.id : `${m.id}（非文本模型，不可用）`
+          opt.disabled = !m.chat
+          og.appendChild(opt)
+        }
+        $select.appendChild(og)
+      }
+      const want = draft.modelId || state.currentModel
+      const chatIds = state.groups.flatMap((g) => g.models.filter((m) => m.chat).map((m) => m.id))
+      $select.value = chatIds.includes(want) ? want : (chatIds[0] || '')
+    }
+
+    function isDirty() {
+      const fcNow = state.presets.some((p) => p.isDefault && p.id === FC)
+      if (draft.enableFc !== fcNow) return true
+      if (draft.enableFc) {
+        return (draft.modelId || $select.value) !== state.currentModel
+      }
+      const defNow = state.presets.find((p) => p.isDefault)
+      return draft.presetId !== (defNow ? defNow.id : 'standard')
+    }
+
+    function renderAll() {
+      renderPresets()
+      renderFcToggle()
+      renderModels()
+      const dirty = isDirty()
+      $apply.disabled = !dirty
+      $apply.style.opacity = dirty ? '' : '.45'
+      $apply.style.cursor = dirty ? 'pointer' : 'default'
+      $apply.title = dirty ? '应用更改' : '没有需要应用的修改'
+    }
+
+    async function refresh() {
+      try {
+        state = await window.dshShell.getData()
+        const fcNow = state.presets.some((p) => p.isDefault && p.id === FC)
+        const defNow = state.presets.find((p) => p.isDefault)
+        draft.enableFc = fcNow
+        draft.presetId = fcNow ? 'standard' : (defNow ? defNow.id : 'standard')
+        draft.modelId = state.currentModel
+        if (!state.selectedModel && state.currentModel) state.selectedModel = state.currentModel
+        if (!state.selectedModel && state.groups.length > 0) {
+          state.selectedModel = (state.groups[0].models.find((m) => m.chat) || state.groups[0].models[0])?.id
+        }
+        renderAll()
+      } catch (e) {
+        setStatus('✗ 数据加载失败：' + e, 'err')
+      }
+    }
+
+    $select.onchange = () => { draft.modelId = $select.value }
+
+    document.getElementById('btn-close').onclick = () => window.dshShell.close()
+    document.getElementById('btn-apply').onclick = async () => {
+      if (!isDirty()) return
+      setStatus('等待确认…')
+      try {
+        const r = await window.dshShell.apply(
+          draft.enableFc
+            ? { enableFc: true, modelId: draft.modelId || $select.value }
+            : { enableFc: false, presetId: draft.presetId },
+        )
+        if (r && r.canceled) { setStatus('已取消'); return }
+        // Goal accomplished — close the dialog.
+        window.dshShell.close()
+      } catch (e) { setStatus('✗ 应用失败：' + e, 'err') }
+    }
+
+    try {
+      window.dshShell.onTheme((t) => { document.body.classList.toggle('light', t === 'light') })
+      window.dshShell.onStage((s) => {
+        if (s === 'committing') setStatus('正在应用（重启后端，约半分钟）…')
+      })
+    } catch (e) { /* preload missing */ }
+
+    ;(async () => { await refresh() })()
+  </script>
+</body>
+</html>
