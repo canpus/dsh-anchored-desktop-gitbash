@@ -27,7 +27,7 @@
   "upstream": {
     "remote": "origin",
     "branch": "master",
-    "lockedCommit": "47f9438"
+    "lockedCommit": "47f943859bef60e4160492346772ded9b24f765a"
   },
   "watch": {
     "self": {
@@ -37,7 +37,7 @@
     "harness": {
       "repo": "https://github.com/deepseek-ai/deepseek-harness.git",
       "branch": "master",
-      "lockedCommit": "47f9438",
+      "lockedCommit": "47f943859bef60e4160492346772ded9b24f765a",
       "note": "官方后端（可升级目标）"
     },
     "anchored": {
