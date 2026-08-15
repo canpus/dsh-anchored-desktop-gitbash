@@ -15,12 +15,13 @@
 //     the PROJECT ROOT outside repo/ and desktop/ — never staged.
 //   - No fc-* presets or proxy values are pre-baked; .dsh is created on first run.
 //   - stage2-archive, dev test scripts and lock files are stripped from desktop/.
-// Usage: node desktop/pack-green.mjs   (pure Node, no deps; robocopy + tar from OS)
+// Usage: node desktop/pack-green.mjs   (pure Node, no deps; robocopy + node:zlib)
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
+import { writeZip, listZipNames } from './zip-write.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -39,22 +40,11 @@ function robocopy(src, dst, { excludeDirs = [] } = {}) {
   if (r.status > 7) throw new Error(`robocopy failed (${r.status})`)
 }
 
-// Windows ships bsdtar (libarchive) at System32 — it supports zip via -a.
-// Git Bash's GNU tar shadows PATH and cannot write zips ("Cannot connect to C:").
-// WORSE: GNU tar `-a` with a .zip suffix silently writes a PLAIN TAR, and the
-// verify below lists entries with libarchive (format-blind) — a tar-named-.zip
-// passed entry checks and shipped broken (v0.3.0 incident, D61). Resolve System32
-// bsdtar EXPLICITLY and fail fast unless it reports libarchive.
-const TAR = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe')
-const tarVersion = spawnSync(TAR, ['--version'], { encoding: 'utf8' })
-if (tarVersion.status !== 0 || !/libarchive|bsdtar/i.test(String(tarVersion.stdout || '') + String(tarVersion.stderr || ''))) {
-  throw new Error(`System32 tar.exe is not bsdtar/libarchive (${tarVersion.stdout || tarVersion.stderr || 'missing'}) — refusing to build`)
-}
-
-function sh(cmd, args) {
-  const r = spawnSync(cmd, args, { stdio: 'inherit' })
-  if (r.status !== 0) throw new Error(`${cmd} failed (${r.status})`)
-}
+// The zip itself is written by desktop/zip-write.mjs (pure Node). Console
+// archivers are NOT used here: Git Bash's GNU tar cannot write zips at all and
+// silently produced a plain tar with `-a` (v0.3.0 incident, D61), and the
+// System32 bsdtar stores non-ASCII names in the ANSI codepage with the UTF-8
+// flag unset — 用户指南.md extracts as mojibake everywhere (D68).
 
 // ---- real-tree copier + link manifest ----
 // Copies every REAL file/dir once (global realpath dedupe). Every junction or
@@ -140,7 +130,7 @@ robocopy(
   path.join(__dirname, 'node_modules', 'electron', 'dist'),
   path.join(STAGE, 'desktop', 'node_modules', 'electron', 'dist'),
 )
-for (const f of ['rpc-test.mjs', 'ui-drive.mjs', 'package-lock.json', 'gen-icons.js', 'pack-green.mjs']) {
+for (const f of ['rpc-test.mjs', 'ui-drive.mjs', 'package-lock.json', 'gen-icons.js', 'pack-green.mjs', 'zip-write.mjs']) {
   fs.rmSync(path.join(STAGE, 'desktop', f), { force: true })
 }
 
@@ -171,17 +161,19 @@ fs.copyFileSync(path.join(__dirname, 'user-guide.md'), path.join(STAGE, '用户�
 const ZIP_TMP = path.join(DIST, `.${path.basename(ZIP)}.partial`)
 log(`zip → ${ZIP}`)
 fs.rmSync(ZIP_TMP, { force: true })
-sh(TAR, ['-a', '--format', 'zip', '-c', '-f', ZIP_TMP, '-C', DIST, path.basename(STAGE)])
+const zipCount = writeZip(STAGE, ZIP_TMP, path.basename(STAGE))
 
 // ---- verify ----
 log('verify zip contents')
-// NO shell:true — cmd.exe pipes in the console codepage (GBK on Chinese
-// Windows) and bsdtar transcodes non-ASCII entry names to it, so a UTF-8
-// filename like 用户指南.md would list as mojibake and fail the has() check
-// (observed: v0.3.8 first build). A direct spawn keeps raw UTF-8 bytes.
-const list = spawnSync(TAR, ['-tf', ZIP_TMP], { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024 })
-if (list.status !== 0) throw new Error('tar list failed')
-const entries = list.stdout.split(/\r?\n/).filter(Boolean)
+// Names come straight from the central directory via listZipNames — flag-aware
+// UTF-8 decode, zero codepage conversion (D68: the bsdtar listing mangled
+// 用户指南.md into GBK), and the EOCD parse itself asserts the archive really
+// is a zip (a tar renamed .zip cannot fake it, D61).
+const entries = listZipNames(ZIP_TMP)
+if (entries.length !== zipCount) {
+  log(`  entry count mismatch: wrote ${zipCount}, listed ${entries.length}`)
+  process.exit(1)
+}
 const has = (suffix) => entries.some((e) => e.replace(/\\/g, '/').endsWith(suffix))
 const required = [
   'desktop/main.js',
@@ -224,6 +216,7 @@ const forbidden = [
   'rpc-test.mjs',
   'ui-drive.mjs',
   'pack-green.mjs',
+  'zip-write.mjs',
 ]
 let ok = true
 for (const r of required) {
@@ -240,9 +233,9 @@ const sizeMb = (fs.statSync(ZIP_TMP).size / 1048576).toFixed(1)
 log(`entries=${entries.length}, zip=${sizeMb} MB, ${ok ? 'VERIFY OK' : 'VERIFY FAILED'}`)
 if (!ok) process.exit(1)
 
-// Format integrity: the entry list alone is format-blind (libarchive reads any
-// format — a tar named .zip lists fine). Assert real ZIP structure and, when
-// unzip exists on PATH, run a full CRC pass.
+// Format integrity: listZipNames already required a real EOCD, but assert the
+// local-header magic too and, when unzip exists on PATH, run a full CRC pass
+// as an independent third check.
 function zipMagicOk(p) {
   const fd = fs.openSync(p, 'r')
   try {
