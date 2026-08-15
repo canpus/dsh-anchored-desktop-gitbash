@@ -74,15 +74,28 @@ let quitting = false
 const TITLEBAR_H = 36
 
 // ---- harness child process ----
+// proxy 现在是 { http, https } 对象（v0.3.6 起；兼容旧的单字符串：双协议同值）。
+// https 未填时回退 http 的值；两者皆空 = 直连。
+function proxyParts() {
+  const p = config.proxy
+  if (typeof p === 'string') {
+    const v = String(p || '').trim()
+    return { http: v, https: v }
+  }
+  const o = (p && typeof p === 'object') ? p : {}
+  return { http: String(o.http || '').trim(), https: String(o.https || '').trim() }
+}
+
 function harnessEnv() {
-  // Proxy for the backend comes from shell-config.json (tray「代理设置」writes
+  // Proxy for the backend comes from shell-config.json (标题栏「代理设置」writes
   // it; empty = direct). Injected at spawn time — restart applies changes.
-  const proxy = String(config.proxy || '').trim()
-  if (!proxy) return process.env
+  const { http: httpProxy, https: httpsProxy } = proxyParts()
+  const httpsEffective = httpsProxy || httpProxy
+  if (!httpProxy && !httpsProxy) return process.env
   return {
     ...process.env,
-    HTTPS_PROXY: proxy,
-    HTTP_PROXY: proxy,
+    ...(httpProxy ? { HTTP_PROXY: httpProxy } : {}),
+    ...(httpsEffective ? { HTTPS_PROXY: httpsEffective } : {}),
     NO_PROXY: 'localhost,127.0.0.1',
   }
 }
@@ -299,6 +312,9 @@ function onShellAction(action) {
       break
     case 'export-pdf':
       openExportDialog()
+      break
+    case 'proxy':
+      openProxyDialog()
       break
     case 'font-minus':
       adjustZoom(-0.5)
@@ -1019,30 +1035,37 @@ function openProxyDialog() {
   })
 }
 
-ipcMain.handle('proxy-dialog:get', () => String(config.proxy || ''))
+ipcMain.handle('proxy-dialog:get', () => proxyParts())
 
-ipcMain.handle('proxy-dialog:save', async (_e, rawValue) => {
-  let value = String(rawValue || '').trim()
-  // Friendly bare-address handling: "127.0.0.1:10809" → "http://127.0.0.1:10809".
-  if (value && !/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) value = `http://${value}`
-  if (value && !/^https?:\/\/\S+$/.test(value) && !/^socks5?:\/\/\S+$/.test(value)) {
-    await showShellDialog({
-      title: '代理设置',
-      message: `代理地址格式无法识别：${value}\n\n请使用 http:// 或 https:// 或 socks5:// 开头（或留空 = 直连）。`,
-      danger: true,
-    })
-    return { ok: false }
+ipcMain.handle('proxy-dialog:save', async (_e, { http, https }) => {
+  const norm = (v) => {
+    let s = String(v || '').trim()
+    // Friendly bare-address handling: "127.0.0.1:10809" → "http://127.0.0.1:10809".
+    if (s && !/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) s = `http://${s}`
+    return s
   }
-  config.proxy = value
+  const h = norm(http)
+  const s = norm(https)
+  for (const [label, v] of [['HTTP 代理', h], ['HTTPS 代理', s]]) {
+    if (v && !/^https?:\/\/\S+$/.test(v) && !/^socks5?:\/\/\S+$/.test(v)) {
+      await showShellDialog({
+        title: '代理设置',
+        message: `${label}地址格式无法识别：${v}\n\n请使用 http:// 或 https:// 或 socks5:// 开头（或留空 = 直连）。`,
+        danger: true,
+      })
+      return { ok: false }
+    }
+  }
+  config.proxy = { http: h, https: s }
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + '\n')
   if (proxyDialog && !proxyDialog.isDestroyed()) proxyDialog.close()
   await showShellDialog({
     title: '代理设置',
-    message: value
-      ? `代理已设置为 ${value}。\n\n重启应用后生效（后端启动时注入）。`
+    message: (h || s)
+      ? `HTTP 代理：${h || '（未设）'}\nHTTPS 代理：${s || '（未设，自动回退 HTTP 值）'}\n\n重启应用后生效（后端启动时注入，检查更新/升级即时生效）。`
       : '已清除代理设置（直连）。\n\n重启应用后生效。',
   })
-  return { ok: true, value }
+  return { ok: true }
 })
 
 ipcMain.on('proxy-dialog:close', () => {
@@ -1400,16 +1423,21 @@ function checkUpdateInteractive() {
         await showShellDialog({ title: '检查更新', message: `检测失败：${r.error}` })
         return
       }
-      if (!r.hasUpdate) {
-        await showShellDialog({ title: '检查更新', message: `已是最新版本（${r.local.slice(0, 8)}）。` })
+      const lines = (r.results || []).map((x) => {
+        if (x.error) return `${x.note || x.name}：✗ 无法检查（${x.error}）`
+        return `${x.note || x.name}：${x.hasUpdate ? `🟢 有更新（${x.detail}）` : `✓ 最新（${x.detail}）`}`
+      })
+      const official = (r.results || []).find((x) => x.name === 'harness')
+      if (official && official.hasUpdate) {
+        const choice = await showShellDialog({
+          title: '检查更新',
+          message: `${lines.join('\n')}\n\n官方后端可升级：将拉取官方代码并重新构建（约 15-30 分钟），失败自动回滚。其余三路（本应用/锚定模板/GitBash 执行器）请在 Git 仓库侧跟进。`,
+          buttons: ['升级', '取消'],
+        })
+        if (choice === 0) startUpgrade()
         return
       }
-      const choice = await showShellDialog({
-        title: '检查更新',
-        message: `发现官方新版本\n\n当前：${r.local.slice(0, 8)}\n最新：${r.remote.slice(0, 8)}\n\n升级将拉取官方代码并重新构建（约 15-30 分钟），失败会自动回滚。`,
-        buttons: ['升级', '取消'],
-      })
-      if (choice === 0) startUpgrade()
+      await showShellDialog({ title: '检查更新', message: lines.join('\n') })
     },
   })
 }

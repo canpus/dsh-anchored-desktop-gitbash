@@ -20,10 +20,37 @@
     "titleContains": "DeepSeek Harness"
   },
   "notifyOnSettle": false,
-  "proxy": "",
+  "proxy": {
+    "http": "",
+    "https": ""
+  },
   "upstream": {
     "remote": "origin",
     "branch": "master",
     "lockedCommit": "47f9438"
+  },
+  "watch": {
+    "self": {
+      "repo": "https://github.com/canpus/dsh-anchored-desktop-gitbash.git",
+      "note": "本应用（桌面壳）"
+    },
+    "harness": {
+      "repo": "https://github.com/deepseek-ai/deepseek-harness.git",
+      "branch": "master",
+      "lockedCommit": "47f9438",
+      "note": "官方后端（可升级目标）"
+    },
+    "anchored": {
+      "repo": "https://github.com/xiaobright/dsh-anchored-standard.git",
+      "branch": "main",
+      "lockedCommit": "6472c1c",
+      "note": "思维链锚定模板"
+    },
+    "gitbash": {
+      "repo": "https://github.com/liceses/dsh-gitbash-preset.git",
+      "branch": "main",
+      "lockedCommit": "fc475f48",
+      "note": "Windows 极简 GitBash 执行器"
+    }
   }
 }

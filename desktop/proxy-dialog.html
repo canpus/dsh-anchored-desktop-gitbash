@@ -20,6 +20,7 @@
     #t { font-weight: 600; font-size: 14px; margin-bottom: 10px; }
     #m { font-size: 12.5px; line-height: 1.6; white-space: pre-wrap;
       word-break: break-word; opacity: .92; margin-bottom: 12px; color: var(--muted); }
+    .lbl { font-size: 12px; opacity: .85; margin: 8px 0 4px; }
     input {
       width: 100%; box-sizing: border-box; padding: 7px 10px; font-size: 12.5px;
       background: transparent; color: var(--fg);
@@ -36,21 +37,32 @@
 </head>
 <body>
   <div id="t">代理设置</div>
-  <div id="m">为联网搜索、模型 API 与检查更新设置代理地址（留空 = 直连）。\n保存后需重启应用生效。\n例如：http://127.0.0.1:10809</div>
-  <input id="proxy" type="text" placeholder="留空 = 直连" spellcheck="false">
+  <div id="m">为联网搜索、模型 API 与检查更新设置代理地址（留空 = 直连）。\n保存后重启应用生效（检查更新/升级即时生效）。\n例如：http://127.0.0.1:10809</div>
+  <div class="lbl">HTTP 代理</div>
+  <input id="http" type="text" placeholder="留空 = 直连" spellcheck="false">
+  <div class="lbl">HTTPS 代理</div>
+  <input id="https" type="text" placeholder="留空 = 与 HTTP 相同" spellcheck="false">
   <div class="btn-row">
     <button id="save">保存</button>
     <button id="cancel" class="ghost">取消</button>
   </div>
   <script>
-    const $proxy = document.getElementById('proxy')
-    window.dshProxy.get().then((v) => { $proxy.value = v || ''; $proxy.focus() })
-    document.getElementById('save').onclick = () => window.dshProxy.save($proxy.value)
-    document.getElementById('cancel').onclick = () => window.dshProxy.close()
-    $proxy.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') window.dshProxy.save($proxy.value)
-      if (e.key === 'Escape') window.dshProxy.close()
+    const $http = document.getElementById('http')
+    const $https = document.getElementById('https')
+    window.dshProxy.get().then((v) => {
+      $http.value = (v && v.http) || ''
+      $https.value = (v && v.https) || ''
+      $http.focus()
     })
+    const save = () => window.dshProxy.save($http.value, $https.value)
+    document.getElementById('save').onclick = save
+    document.getElementById('cancel').onclick = () => window.dshProxy.close()
+    for (const el of [$http, $https]) {
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') save()
+        if (e.key === 'Escape') window.dshProxy.close()
+      })
+    }
     window.dshProxy.onTheme((theme) => {
       document.body.classList.toggle('light', theme === 'light')
     })

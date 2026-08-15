@@ -40,6 +40,7 @@
       <button id="btn-font-plus" title="放大字体（Ctrl+=）">A+</button>
       <button id="btn-subagent">模式切换</button>
       <button id="btn-pdf">导出对话</button>
+      <button id="btn-proxy">代理设置</button>
       <button id="btn-update">检查更新</button>
       <button id="btn-restart">重启应用</button>
     </div>
@@ -52,6 +53,7 @@
     document.getElementById('btn-font-plus').addEventListener('click', () => send('font-plus'))
     document.getElementById('btn-subagent').addEventListener('click', () => send('subagent-model'))
     document.getElementById('btn-pdf').addEventListener('click', () => send('export-pdf'))
+    document.getElementById('btn-proxy').addEventListener('click', () => send('proxy'))
     document.getElementById('btn-update').addEventListener('click', () => send('check-update'))
     document.getElementById('btn-restart').addEventListener('click', () => send('restart'))
     try {
