@@ -13,8 +13,40 @@ const { spawn, spawnSync, execFileSync } = require('node:child_process')
 const path = require('node:path')
 const fs = require('node:fs')
 const http = require('node:http')
+const os = require('node:os')
 
-const log = (...args) => console.log(`[desktop ${(Date.now() / 1000).toFixed(1)}s]`, ...args)
+// ---- structured log to disk (关键操作日志纪律, 项目 AGENTS.md §3.4) ----
+// Every log line is ALSO appended to ~/.dsh/logs/desktop-shell.log so a
+// failure never depends on the user's verbal report (which may be partial or
+// wrong). launch.log (green-package dir, via the launcher bat) captures the
+// process stdout/stderr incl. the backend's own output; this file is the
+// shell's structured record across versions. Rolled to .old beyond 8 MB.
+// Logging must never break the shell.
+const LOG_DIR = path.join(os.homedir(), '.dsh', 'logs')
+const LOG_FILE = path.join(LOG_DIR, 'desktop-shell.log')
+const LOG_MAX = 8 * 1024 * 1024
+
+function logToFile(line) {
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true })
+    const st = fs.existsSync(LOG_FILE) ? fs.statSync(LOG_FILE) : null
+    if (st && st.size > LOG_MAX) {
+      try { fs.renameSync(LOG_FILE, `${LOG_FILE}.old`) } catch { /* keep appending */ }
+    }
+    fs.appendFileSync(LOG_FILE, `${line}\n`, 'utf8')
+  } catch { /* logging must never break the shell */ }
+}
+
+const log = (...args) => {
+  const line = `[desktop ${(Date.now() / 1000).toFixed(1)}s] ${args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')}`
+  console.log(line)
+  logToFile(line)
+}
+
+// A crash must be explainable from the log alone: record the exception, not
+// just the fact that the app vanished.
+process.on('uncaughtException', (e) => { log('UNCAUGHT EXCEPTION:', String((e && e.stack) || e)) })
+process.on('unhandledRejection', (r) => { log('UNHANDLED REJECTION:', String((r && r.stack) || r)) })
 
 // ---- shell interface config (auto-adapted by updater, see shell-config.json) ----
 const CONFIG_PATH = path.join(__dirname, 'shell-config.json')
@@ -71,6 +103,7 @@ let titlebarView = null
 let tray = null
 let child = null
 let quitting = false
+let pageReadyLoaded = false // loading page vs real backend page (window-first boot)
 const TITLEBAR_H = 36
 
 // ---- harness child process ----
@@ -119,7 +152,7 @@ function startHarness() {
     if (modeIdx !== -1) args.splice(modeIdx + 1, 0, '--patch', patchPath)
     else args.push('--patch', patchPath)
   }
-  const proxyOn = String(config.proxy || '').trim() !== ''
+  const proxyOn = Boolean((proxyParts().http) || (proxyParts().https))
   log(`spawning harness: ${bin} ${args.join(' ')} (cwd ${REPO}, proxy ${proxyOn ? 'configured' : 'direct'})`)
   child = spawn(bin, args, {
     cwd: REPO,
@@ -146,7 +179,7 @@ function startHarness() {
 }
 
 function killHarness() {
-  if (!child) return
+  if (!child) return 0
   const proc = child
   const pid = proc.pid
   child = null // detach first: the async exit event then reads as normal shutdown
@@ -164,46 +197,139 @@ function killHarness() {
       log(`WARNING: harness pid ${pid} survived killHarness — ghost backend on :${PORT}`)
     }
   } catch { /* diagnostic only */ }
+  return pid
 }
 
-// ---- readiness probe: HTTP status + optional <title> substring ----
+// ---- exit-race monitor (退出后进程/端口竞态监控, 项目 AGENTS §3.4) ----
+// A detached node child outlives the shell for ~10s and watches the killed
+// backend pid + web port, appending findings to the structured log — so a
+// ghost backend or a port held by a stranger is visible in the log without
+// any user narration. Only the real quit path spawns it; restart deliberately
+// does NOT (the relaunched instance legitimately re-occupies the port within
+// seconds and would read as a false positive).
+function startExitMonitor(killedPid) {
+  if (!killedPid) return
+  const monitorScript = path.join(__dirname, 'exit-monitor.mjs')
+  if (!fs.existsSync(monitorScript)) return
+  try {
+    const p = spawn(resolveNode(), [monitorScript, String(killedPid), String(PORT), LOG_FILE, '10'], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+    p.unref()
+    log('exit monitor spawned:', 'pid=' + killedPid, 'port=' + PORT, 'watch=10s')
+  } catch (error) {
+    log('exit monitor spawn failed:', String(error))
+  }
+}
+
+// ---- readiness probe: HTTP status + <title> + one RPC roundtrip ----
 // The alive check guards against a false positive when a stray instance of
 // the web server already listens on the port (our own child died on EADDRINUSE
 // while the probe would otherwise read the stranger's HTTP 200 as ready).
+// The RPC probe covers the boot window where the HTTP listener is up but the
+// service router is not mounted yet (measured ~0.2s on both boot paths,
+// 2026-08-15): a page load racing "ready" would otherwise see transient 404s.
+function probeTitle() {
+  return new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port: PORT, path: READY.path, timeout: 2000 }, (res) => {
+      let body = ''
+      res.setEncoding('utf8')
+      res.on('data', (c) => {
+        body += c
+        // Generous cap only — never destroy a probe response (see rpcProbe).
+        if (body.length > 8 * 1024 * 1024) res.destroy()
+      })
+      res.on('end', () => {
+        const titleMatch = body.match(/<title>([^<]*)<\/title>/i)
+        const title = titleMatch ? titleMatch[1].trim() : ''
+        const titleOk = !READY.titleContains || title.includes(READY.titleContains)
+        resolve(res.statusCode === READY.status && titleOk ? title : null)
+      })
+      res.on('aborted', () => resolve(null))
+      res.on('error', () => resolve(null))
+    })
+    req.on('error', () => resolve(null)) // not ready yet
+    req.on('timeout', () => { req.destroy(); resolve(null) })
+  })
+}
+
+function rpcProbe(method) {
+  return new Promise((resolve) => {
+    const body = JSON.stringify({ type: 'client-request', rpcId: `probe-${Date.now()}-${Math.random().toString(36).slice(2)}`, method, payload: {} })
+    const req = http.request({
+      host: '127.0.0.1',
+      port: PORT,
+      path: `/api/${method}`,
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
+      timeout: 2000,
+    }, (res) => {
+      let text = ''
+      res.setEncoding('utf8')
+      res.on('data', (c) => {
+        text += c
+        // Generous cap only. D70: the old 40K destroy guard aborted big RPC
+        // responses (session.list measured ~96KB) mid-stream — 'end' never
+        // fired, the promise never settled, and the busy-guarded probe
+        // deadlocked the whole startup. A probe response must ALWAYS settle.
+        if (text.length > 8 * 1024 * 1024) res.destroy()
+      })
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(text)
+          resolve(Boolean(json.result && json.result.ok))
+        } catch { resolve(false) }
+      })
+      res.on('aborted', () => resolve(false))
+      res.on('error', () => resolve(false))
+    })
+    req.on('error', () => resolve(false))
+    req.on('timeout', () => { req.destroy(); resolve(false) })
+    req.write(body)
+    req.end()
+  })
+}
+
 function probeReady(timeoutMs, isChildAlive) {
   return new Promise((resolve, reject) => {
     const started = Date.now()
-    const timer = setInterval(() => {
-      if (Date.now() - started > timeoutMs) {
+    let busy = false
+    const timer = setInterval(tick, 250)
+    // Per-tick fuse: probe promises are written to always settle, but a fused
+    // tick must never wedge the busy guard (D70 deadlock lesson).
+    const withFuse = (promise, fallback, ms = 3000) => Promise.race([
+      promise,
+      new Promise((r) => setTimeout(() => r(fallback), ms)),
+    ])
+    async function tick() {
+      if (busy) return // a previous tick's roundtrips are still in flight
+      busy = true
+      try {
+        if (Date.now() - started > timeoutMs) {
+          clearInterval(timer)
+          reject(new Error(`readiness timeout: no HTTP ${READY.status} on :${PORT}${READY.path}`))
+          return
+        }
+        if (!isChildAlive()) {
+          clearInterval(timer)
+          reject(new Error('harness process died before readiness (port already taken?)'))
+          return
+        }
+        const title = await withFuse(probeTitle(), null)
+        if (title !== null && await withFuse(rpcProbe('session.list'), false)) {
+          clearInterval(timer)
+          resolve({ status: READY.status, title })
+        }
+      } catch (error) {
         clearInterval(timer)
-        reject(new Error(`readiness timeout: no HTTP ${READY.status} on :${PORT}${READY.path}`))
-        return
+        reject(error)
+      } finally {
+        busy = false
       }
-      if (!isChildAlive()) {
-        clearInterval(timer)
-        reject(new Error('harness process died before readiness (port already taken?)'))
-        return
-      }
-      const req = http.get({ host: '127.0.0.1', port: PORT, path: READY.path, timeout: 2000 }, (res) => {
-        let body = ''
-        res.setEncoding('utf8')
-        res.on('data', (c) => {
-          body += c
-          if (body.length > 40000) res.destroy()
-        })
-        res.on('end', () => {
-          const titleMatch = body.match(/<title>([^<]*)<\/title>/i)
-          const title = titleMatch ? titleMatch[1].trim() : ''
-          const titleOk = !READY.titleContains || title.includes(READY.titleContains)
-          if (res.statusCode === READY.status && titleOk) {
-            clearInterval(timer)
-            resolve({ status: res.statusCode, title })
-          }
-        })
-      })
-      req.on('error', () => { /* not ready yet */ })
-      req.on('timeout', () => req.destroy())
-    }, 500)
+    }
+    tick() // probe immediately, don't wait for the first interval
   })
 }
 
@@ -255,6 +381,13 @@ function createWindow() {
     log('PRELOAD ERROR:', preloadPath, String(error && error.message || error))
   })
   mainView.webContents.on('did-finish-load', () => {
+    // The window boots with a local loading page first; only wire the real
+    // backend page (injection + zoom) once it has been swapped in.
+    if (!pageReadyLoaded) {
+      applyLoadingStatus()
+      return
+    }
+    log('main UI loaded')
     injectMainWorldScript()
     if (initialZoom !== 0) mainView.webContents.setZoomLevel(initialZoom)
   })
@@ -264,8 +397,35 @@ function createWindow() {
 
   titlebarView.webContents.loadFile(path.join(__dirname, 'titlebar.html'))
   titlebarView.webContents.on('did-finish-load', () => pushTheme(titlebarView.webContents))
-  mainView.webContents.loadURL(`http://127.0.0.1:${PORT}${READY.path}`)
+  mainView.webContents.loadFile(path.join(__dirname, 'loading.html'))
   installContextMenu()
+}
+
+// ---- loading page status (window-first boot) ----
+// The loading page renders before the backend may be up; status updates race
+// its own did-finish-load, so they go through a pending slot that the
+// did-finish-load handler flushes.
+let pendingStatus = { text: '', error: false }
+
+function setLoadingStatus(text, error = false) {
+  pendingStatus = { text, error }
+  applyLoadingStatus()
+}
+
+function applyLoadingStatus() {
+  if (!mainView || mainView.webContents.isDestroyed() || mainView.webContents.isLoading()) return
+  const { text, error } = pendingStatus
+  if (!text) return
+  mainView.webContents.executeJavaScript(`(() => {
+    const el = document.getElementById('status')
+    if (el) { el.textContent = ${JSON.stringify(text)}; el.style.color = ${error ? "'#f87171'" : "''"} }
+    const sp = document.getElementById('spinner')
+    if (sp) sp.style.display = ${error ? "'none'" : "''"}
+  })()`).catch(() => {})
+}
+
+function showLoadingError(text) {
+  setLoadingStatus(`启动失败：${text}`, true)
 }
 
 // ---- tray ----
@@ -528,18 +688,39 @@ ipcMain.handle('export-dialog:export', async (_e, { sessionId, title }) => {
   })
   if (canceled || !filePath) return { ok: true, canceled: true }
   fs.writeFileSync(filePath, data)
+  log('export pdf:', sessionId, '→', filePath)
   return { ok: true, filePath }
 })
 
 // ---- notifications: poll session state; fire when a running session or
 // subagent settles. Approval events are NOT in the official forwarded-event
 // whitelist, so approvals cannot notify without DOM probing (out of scope).
+// The same poll doubles as the 关键操作日志 feed (项目 AGENTS §3.4): new
+// sessions / workspaces / archives are diffed against a snapshot and logged.
+// The FIRST poll only warms the snapshot — pre-existing items are not
+// "created" events.
 let notifySeen = new Set()
+let knownSessions = new Set()
+let knownWorkspaces = new Set()
+let knownArchived = new Set()
+let snapshotsReady = false
 async function pollNotifications() {
   if (quitting) return
   try {
-    const sl = await httpRpc('session.list')
+    const [sl, wl] = await Promise.all([httpRpc('session.list'), httpRpc('workspace.list')])
+    for (const w of wl.items || []) {
+      const wid = w.id || w.workspaceId
+      if (!wid) continue
+      if (snapshotsReady && !knownWorkspaces.has(wid)) log('workspace created:', wid)
+      knownWorkspaces.add(wid)
+    }
+    for (const id of (wl.archivedSessionIds || [])) {
+      if (snapshotsReady && !knownArchived.has(id)) log('workspace change: session archived:', id)
+      knownArchived.add(id)
+    }
     for (const s of sl.items || []) {
+      if (snapshotsReady && !knownSessions.has(s.sessionId)) log('session created:', s.sessionId)
+      knownSessions.add(s.sessionId)
       if (s.running === false && notifySeen.has(s.sessionId)) {
         notifySeen.delete(s.sessionId)
         if (config.notifyOnSettle === false) continue
@@ -551,6 +732,7 @@ async function pollNotifications() {
         notifySeen.add(s.sessionId)
       }
     }
+    snapshotsReady = true
   } catch { /* backend busy or gone */ }
   setTimeout(pollNotifications, 8000)
 }
@@ -558,7 +740,6 @@ async function pollNotifications() {
 // ---- "子 Agent 模型" dialog: one dynamic user preset `fc-child` + the
 // official default-preset switch, all driven from the shell (the official
 // per-session switcher UI is disabled via --patch).
-const os = require('node:os')
 const { generateFcChild, installRouterPreset, installMinimalGitbash, fcChildDir } = require('./preset-gen.cjs')
 
 // Generate the ONE user preset `fc-child` (display name「自定义子模型」) from
@@ -689,6 +870,7 @@ ipcMain.handle('model-dialog:set-default', async (_e, { agentPreset }) => {
 //                    default=fc-child → restart backend.
 //   enableFc=false → default=presetId (official hot-reload, no restart).
 ipcMain.handle('model-dialog:apply', async (_e, { enableFc, modelId, presetId }) => {
+  log('model apply:', 'enableFc=' + Boolean(enableFc), 'modelId=' + (modelId || ''), 'presetId=' + (presetId || ''))
   if (!enableFc) {
     if (presetId === 'router-standard') installRouterPreset({ desktopDir: __dirname })
     if (presetId === 'minimal-gitbash') installMinimalGitbash({ desktopDir: __dirname })
@@ -1046,6 +1228,7 @@ ipcMain.handle('proxy-dialog:save', async (_e, { http, https }) => {
   }
   const h = norm(http)
   const s = norm(https)
+  log('proxy save:', 'http=' + (h || '（空）'), 'https=' + (s || '（空）'))
   for (const [label, v] of [['HTTP 代理', h], ['HTTPS 代理', s]]) {
     if (v && !/^https?:\/\/\S+$/.test(v) && !/^socks5?:\/\/\S+$/.test(v)) {
       await showShellDialog({
@@ -1173,7 +1356,10 @@ ipcMain.on('shell:file-drop', async (_e, items) => {
       fs.copyFileSync(src, dest)
       lines.push(`${it.isImage ? '[图片]' : '[文件]'} ${name} 已复制到会话临时区: ${dest}`)
     }
-    if (lines.length > 0) injectText(lines.join('\n') + '\n')
+    if (lines.length > 0) {
+      log('file-drop:', items.length, 'item(s), session', safe, '→', dir)
+      injectText(lines.join('\n') + '\n')
+    }
   } catch (err) {
     log('file-drop failed:', String((err && err.message) || err))
   }
@@ -1444,12 +1630,14 @@ function checkUpdateInteractive() {
 
 async function startUpgrade() {
   upgrading = true
+  log('upgrade started')
   openProgressWindow()
   const result = await updater.runUpgrade({
     onStep: (s) => { if (progressWin) progressWin.webContents.send('upgrade-step', s) },
   })
   closeProgressWindow()
   upgrading = false
+  log('upgrade finished:', 'ok=' + Boolean(result.ok), result.ok ? 'target=' + String(result.target).slice(0, 8) : 'error=' + String(result.error))
   if (result.ok) {
     const choice = await showShellDialog({
       title: '升级完成',
@@ -1494,6 +1682,7 @@ async function restart() {
     danger: busy > 0,
   })
   if (choice !== 0) return
+  log('user restart confirmed — relaunching')
   quitting = true
   killHarness()
   // Normal quit path (not app.exit) so the single-instance lock releases
@@ -1520,7 +1709,8 @@ function shutdown() {
       if (choice !== 0) return
     }
     quitting = true
-    killHarness()
+    const killedPid = killHarness()
+    startExitMonitor(killedPid)
     app.quit()
     // Fuse: if anything still holds the process 5s after quit (a stuck
     // dialog, a wedged renderer), force-exit so the shell never ghosts.
@@ -1574,29 +1764,20 @@ async function main() {
     app.quit()
   })
   app.on('before-quit', () => {
+    log('before-quit — shutting down')
     quitting = true
     killHarness() // any quit path must take the backend down, no exceptions
   })
 
   ipcMain.on('shell-action', (_event, action) => onShellAction(action))
 
-  await ensureLinked()
-  ensurePortableAgents()
-  startHarness()
-  try {
-    const ready = await probeReady(60000, () => child !== null && child.exitCode === null && child.signalCode === null)
-    log(`harness ready, http ${ready.status}, title "${ready.title}", opening window`)
-  } catch (error) {
-    log('READINESS FAILED:', String(error))
-    killHarness()
-    process.exitCode = 1
-    app.quit()
-    return
-  }
-
+  // Window + tray come up IMMEDIATELY with a local loading page: a slow
+  // backend boot (first-launch relink or a cold start) must never look like
+  // the app failed to launch. The real page is swapped in once ready.
   createWindow()
   createTray()
   applyTheme(currentTheme) // push the initial titlebar overlay color immediately
+  log('window up (loading page), waiting for backend readiness')
 
   globalShortcut.register('CommandOrControl+Shift+H', () => {
     if (win) { win.show(); win.focus() }
@@ -1605,6 +1786,24 @@ async function main() {
     if (win) win.hide()
   })
   app.on('will-quit', () => globalShortcut.unregisterAll())
+
+  await ensureLinked()
+  ensurePortableAgents()
+  setLoadingStatus('正在启动后端…')
+  startHarness()
+  try {
+    const ready = await probeReady(60000, () => child !== null && child.exitCode === null && child.signalCode === null)
+    log(`harness ready, http ${ready.status}, title "${ready.title}", opening web page`)
+    pageReadyLoaded = true
+    mainView.webContents.loadURL(`http://127.0.0.1:${PORT}${READY.path}`)
+  } catch (error) {
+    log('READINESS FAILED:', String(error))
+    showLoadingError(String(error))
+    killHarness()
+    process.exitCode = 1
+    setTimeout(() => app.quit(), 2500) // leave the error visible for a moment
+    return
+  }
 
   if (!SMOKE_MS) {
     pollNotifications()

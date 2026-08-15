@@ -27,7 +27,7 @@
 
 ## 实现原理
 
-1. **薄壳**：`desktop/main.js`（Electron 主进程）spawn `node apps/cli/src/bin.ts web --host 127.0.0.1 --port 3080`，就绪探测（含子进程存活校验）后加载官方 UI 到无边框 BrowserWindow；退出时进程树清理 + 保险丝。接口面（启动命令/端口/就绪信号）集中在 `desktop/shell-config.json`。
+1. **薄壳**：`desktop/main.js`（Electron 主进程）启动即建窗（加载页）并 spawn `node apps/cli/lib/bin.js web --host 127.0.0.1 --port 3080`（官方 tsdown 编译产物，避免 tsx 每次启动现场转译）；就绪探测（HTTP + title + RPC 三轮，含子进程存活校验）后换载官方 UI 到无边框 BrowserWindow；退出时进程树清理 + 保险丝。接口面（启动命令/端口/就绪信号）集中在 `desktop/shell-config.json`。
 2. **预设生态**（官方用户预设机制，零魔改上游）：
    - `fc-child`（日常默认）= **融合预设**：anchored-standard 的 Standard 组成 + 首轮 bootstrap（`tool-bootstrap.mjs`：persona 对齐 + 工具目录过滤 + 1024 输出封顶 + 压掉 AGENTS/skill 注入，首个 tool/call 或首条 assistant 消息后全量）+ minimal-gitbash 的 GitBash shell 组与 str_replace_editor 文件组 + 子 Agent `agentOptions` 注入（默认 Flash 降本）。
    - `router-standard`（feature 分支）：任务感知三模式路由（spec/react/weak）。
@@ -40,6 +40,7 @@
 
 | 版本 | 内容 |
 |---|---|
+| **0.3.9** | **启动提速**：后端改跑官方编译产物 `apps/cli/lib/bin.js`（不再 tsx 现场转译，实测冷 79.4s→约 5s、热 20.0s→约 3s）；启动即显示窗口+加载页（不再等就绪后才建窗）；就绪契约加 RPC 探测（覆盖就绪后 ~0.2s 路由挂载窗口）；打包断言 lib 产物存在；proxyOn 日志误报修复 |
 | **0.3.8** | 依赖更新两支：anchored 95b98af（无封顶锚定）+ 官方后端 47f94385（升级主链路首次实跑）；**用户指南随包**（开启自定义子模型全流程）；**打包管线大修**：纯 Node zip 写入器（中文文件名全平台正确 + ZIP64），PowerShell/编码踩坑实录见下 |
 | **0.3.6** | 代理设置 http/https 分填 + 标题栏入口；**检查更新四路化**（本应用 Release tag / 官方后端 / anchored / gitbash）；README 与更新日志；仓库更名 `dsh-anchored-desktop-gitbash` |
 | **0.3.5** | 五项体验修复：导出对话默认只列当前工作区现存会话 + 「包含历史对话」开关；导出小窗浅色模式关闭按钮可见；模式列表收敛为官方 4 模式 + 自定义子模型；**任意文件拖拽**（临时区复制 + 文件名/路径注入上下文，图片走官方流程）；字体缩放 A−/A+ 按钮 + 重启记忆 |

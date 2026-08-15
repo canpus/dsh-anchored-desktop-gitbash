@@ -116,6 +116,18 @@ function copyRepoTree() {
   })()
 }
 
+// ---- build-artifact gate (D70) ----
+// The shell boots the harness from apps/cli/lib/bin.js (the official tsdown
+// bundle) — NOT the tsx source path, which costs 20-79s per launch (measured
+// 2026-08-15). lib/ is git-ignored build output: packing a tree without it
+// would ship a launcher that cannot start. Upgrade paths rebuild it
+// (build:lib); local packs must fail fast instead of shipping a dead zip.
+const CLI_LIB_BIN = path.join(ROOT, 'repo', 'apps', 'cli', 'lib', 'bin.js')
+if (!fs.existsSync(CLI_LIB_BIN)) {
+  log('FATAL: repo/apps/cli/lib/bin.js 缺失 — 先跑 build:lib（pnpm run build:lib）再打包')
+  process.exit(1)
+}
+
 // ---- stage ----
 log('clean staging dir')
 fs.rmSync(STAGE, { recursive: true, force: true })
@@ -138,9 +150,12 @@ log('bundle node.exe (the runtime this script runs under)')
 fs.copyFileSync(process.execPath, path.join(STAGE, 'desktop', 'node.exe'))
 
 log('write launcher + readme + user guide')
+// launcher logs every run to launch.log (double-click timestamp + the shell's
+// own [desktop Xs] lines): startup-time stats and post-mortem debugging need
+// it — a detached electron's stdout goes nowhere otherwise.
 fs.writeFileSync(
   path.join(STAGE, '启动.bat'),
-  '@echo off\r\nstart "" "%~dp0desktop\\node_modules\\electron\\dist\\electron.exe" "%~dp0desktop\\main.js"\r\n',
+  '@echo off\r\necho [launch %date% %time%] >> "%~dp0launch.log"\r\nstart "" "%~dp0desktop\\node_modules\\electron\\dist\\electron.exe" "%~dp0desktop\\main.js" >> "%~dp0launch.log" 2>&1\r\n',
 )
 fs.writeFileSync(path.join(STAGE, '说明.txt'), [
   'DeepSeek Harness 桌面版（绿色版）— 快速上手',
@@ -153,6 +168,15 @@ fs.writeFileSync(path.join(STAGE, '说明.txt'), [
 ].join('\r\n'))
 fs.copyFileSync(path.join(__dirname, 'user-guide.md'), path.join(STAGE, '用户指南.md'))
 
+// ---- stage-only mode (项目 AGENTS §3.1: 先测试、后打包) ----
+// The user tests the UNPACKED release first (double-click 启动.bat in the
+// versioned dir below); the zip — compress + three-layer verify + publish —
+// only runs AFTER the test passes. --stage-only builds and pre-relinks the
+// unpacked package and stops there. Without the flag: full pipeline.
+const STAGE_ONLY = process.argv.includes('--stage-only')
+if (STAGE_ONLY) {
+  log('--stage-only: unpacked release only — skipping zip (test first, zip after user passes)')
+} else {
 // ---- zip (atomic publish) ----
 // The archive is written to a .partial name and only renamed into place after
 // a clean verify — the real zip path must NEVER point at a half-written file
@@ -280,4 +304,48 @@ for (const f of fs.readdirSync(DIST)) {
   }
 }
 log(`published ${path.basename(ZIP)}`)
+}
+
+// ---- keep an UNPACKED sibling for quick local testing (user requirement,
+// 2026-08-15): rename the staging tree to a versioned dir, pre-relink its
+// dependency junctions so a double-click boots in seconds instead of the
+// 1-5 min first-launch relink, and prune unpacked dirs of older versions.
+// Pre-relink is non-fatal: if it fails the unpacked copy still works, just
+// with the normal first-launch relink.
+const UNPACKED = path.join(DIST, `DeepSeek-Harness-v${pkg.version}`)
+try {
+  fs.rmSync(UNPACKED, { recursive: true, force: true })
+} catch (error) {
+  // Explorer browsing the dir / a lingering handle can make the rm fail with
+  // EPERM. Side-move the old dir instead of dying AFTER the zip has already
+  // been published — the zip is the verified artifact; the unpacked copy is
+  // replaceable.
+  const stale = `${UNPACKED}.old-${Date.now()}`
+  try {
+    fs.renameSync(UNPACKED, stale)
+    log(`  old unpacked dir busy — moved aside to ${path.basename(stale)}`)
+  } catch {
+    log(`FATAL: cannot replace ${path.relative(ROOT, UNPACKED)} (${String(error.code || error)}) — close the folder / stop the app and retry`)
+    process.exit(1)
+  }
+}
+fs.renameSync(STAGE, UNPACKED)
+log(`unpacked copy: ${path.relative(ROOT, UNPACKED)}`)
+
+for (const f of fs.readdirSync(DIST)) {
+  try {
+    const p = path.join(DIST, f)
+    if (f.startsWith('DeepSeek-Harness-v') && f !== path.basename(UNPACKED) && fs.statSync(p).isDirectory()) {
+      fs.rmSync(p, { recursive: true, force: true })
+      log(`pruned old unpacked dir ${f}`)
+    }
+  } catch { /* not a dir we manage */ }
+}
+
+const relink = spawnSync(process.execPath, [path.join(UNPACKED, 'desktop', 'relink.mjs')], { stdio: 'inherit' })
+if (relink.status !== 0) {
+  log('  WARNING: pre-relink failed — first launch of the unpacked copy will relink (1-5 min)')
+} else {
+  log('  unpacked copy pre-relinked: double-click 启动.bat boots in seconds')
+}
 process.exit(0)

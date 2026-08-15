@@ -1,6 +1,6 @@
 {
   "name": "deepseek-harness-desktop",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "private": true,
   "description": "Desktop shell for deepseek-harness — green package: thin shell over official dsh web (3080 child process) + anchored/router presets + titlebar/tray/updater",
   "main": "main.js",
