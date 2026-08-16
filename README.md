@@ -1,10 +1,16 @@
-# dsh-anchored-desktop-gitbash
+# dsh-desktop-economy
 
-**DeepSeek Harness 桌面端（Windows 绿色版）**——官方 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) 的薄壳 GUI + 「省钱模式」子模型路由 + 思维链实验开关。
+**DeepSeek Harness 桌面端 · 子模型经济版（Windows 绿色版）**——官方 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) 的薄壳 GUI + 「省钱模式」子 Agent 模型路由 + 思维链实验开关。
 
 一个解压即用的 Windows 桌面应用：Electron 薄壳拉起官方 `dsh web` 后端（官方 npm 包随绿色版整包内置），套上原生窗口体验（标题栏/托盘/对话框/中文命令层），提供**「省钱模式」**（官方标准 + 子 Agent 便宜模型路由）与两个互斥的**思维链实验开关**（锚定 / 路由，第三方预设逐字搬运）。
 
 > **红线声明**：本项目**不 fork、不魔改**上游 `packages/`。所有扩展都走官方机制：用户预设（`~/.dsh/.agent-presets/`）、profile patch（`--patch`）、官方 RPC、主世界 UI 注入。上游引擎 = 官方 npm 包 `@deepseek-ai/dsh`（vendor 整包内置，升级 = 更新锁定版本后重新打包）。
+
+## 项目缘起
+
+DeepSeek 官方涨价后，使用成本大幅提高：Flash 尚可勉强承受，Pro 则过于昂贵；一旦涉及复杂任务、需要调用 Sub-Agent，花销更会成倍放大。本项目允许你自由选择**已接入的任意大语言模型**作为 Sub-Agent 模型，以显著降低使用成本——这就是「省钱模式」的由来：主 Agent 保持你信任的主力模型，子 Agent 按需降级，钱包与质量兼得。
+
+思维链锚定 / 任务路由作为**实验开关**另行提供（第三方预设逐字搬运、版本锁定，效果归上游），与省钱模式彻底解耦，互不绑架。
 
 ---
 

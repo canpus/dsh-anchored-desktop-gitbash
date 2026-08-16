@@ -25,7 +25,7 @@
   },
   "watch": {
     "self": {
-      "repo": "https://github.com/canpus/dsh-anchored-desktop-gitbash.git",
+      "repo": "https://github.com/canpus/dsh-desktop-economy.git",
       "note": "本应用（桌面壳）"
     },
     "harness": {
