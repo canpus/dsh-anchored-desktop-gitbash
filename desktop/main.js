@@ -164,8 +164,17 @@ function startHarness() {
     env: harnessEnv(),
   })
   const myChild = child
-  myChild.stdout.on('data', (d) => process.stdout.write(`[dsh] ${d}`))
-  myChild.stderr.on('data', (d) => process.stderr.write(`[dsh] ${d}`))
+  // Engine output goes to stdout (visible in launch.log via the hidden
+  // powershell redirect) AND to desktop-shell.log so a backend failure is
+  // never lost to a discarded console (启动日志管道纪律).
+  myChild.stdout.on('data', (d) => {
+    process.stdout.write(`[dsh] ${d}`)
+    logToFile(`[dsh] ${String(d).replace(/\s+$/, '')}`)
+  })
+  myChild.stderr.on('data', (d) => {
+    process.stderr.write(`[dsh] ${d}`)
+    logToFile(`[dsh] ${String(d).replace(/\s+$/, '')}`)
+  })
   myChild.on('exit', (code, signal) => {
     log(`harness child exited code=${code} signal=${signal}`)
     // Closure capture: a restarted backend spawns a NEW child object; a stale
@@ -363,6 +372,10 @@ function createWindow() {
     mainView = null
     titlebarView = null
   })
+  // Belt-and-braces: a launch chain that hides the process start state
+  // (hidden launcher) can suppress the initial show — force visibility so
+  // the app never lands tray-only at startup.
+  win.show()
   win.on('close', (e) => {
     if (!quitting) {
       e.preventDefault()
@@ -399,7 +412,10 @@ function createWindow() {
   layoutViews()
 
   titlebarView.webContents.loadFile(path.join(__dirname, 'titlebar.html'))
-  titlebarView.webContents.on('did-finish-load', () => pushTheme(titlebarView.webContents))
+  titlebarView.webContents.on('did-finish-load', () => {
+    pushTheme(titlebarView.webContents)
+    pushPresetState()
+  })
   mainView.webContents.loadFile(path.join(__dirname, 'loading.html'))
   installContextMenu()
 }
@@ -525,19 +541,37 @@ function httpRpc(method, payload = {}) {
   })
 }
 
-// ---- zoom (Ctrl+wheel / Ctrl+=/-/0 forwarded by the main-view preload;
-// persisted in shell-state.json so the font size survives restarts) ----
-const STATE_PATH = path.join(__dirname, 'shell-state.json')
+// ---- zoom + mode state (Ctrl+wheel zoom, mode state machine), persisted in
+// ~/.dsh/shell-state.json — the STABLE shell home, not the versioned green
+// dir (a version-directory upgrade would silently drop the user's mode
+// choice; plan_v0.4.2 §0). The legacy __dirname/shell-state.json from ≤0.4.1
+// is migrated once, read-only.
+const SHELL_STATE_PATH = path.join(os.homedir(), '.dsh', 'shell-state.json')
+const LEGACY_STATE_PATH = path.join(__dirname, 'shell-state.json')
+function migrateShellState() {
+  try {
+    if (!fs.existsSync(SHELL_STATE_PATH) && fs.existsSync(LEGACY_STATE_PATH)) {
+      fs.mkdirSync(path.dirname(SHELL_STATE_PATH), { recursive: true })
+      fs.copyFileSync(LEGACY_STATE_PATH, SHELL_STATE_PATH)
+      log('shell-state migrated:', LEGACY_STATE_PATH, '→', SHELL_STATE_PATH)
+    }
+  } catch (e) { log('shell-state migration failed:', String(e)) }
+}
 function loadState() {
-  try { return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')) } catch { return {} }
+  try { return JSON.parse(fs.readFileSync(SHELL_STATE_PATH, 'utf8')) } catch { return {} }
+}
+function persistState(patch) {
+  try {
+    const st = { ...loadState(), ...patch }
+    fs.mkdirSync(path.dirname(SHELL_STATE_PATH), { recursive: true })
+    fs.writeFileSync(SHELL_STATE_PATH, JSON.stringify(st, null, 2) + '\n')
+    return st
+  } catch (e) { log('state persist failed:', String(e)); return null }
 }
 function persistZoom(level) {
-  try {
-    const st = loadState()
-    st.zoomLevel = level
-    fs.writeFileSync(STATE_PATH, JSON.stringify(st, null, 2) + '\n')
-  } catch (e) { log('zoom persist failed:', String(e)) }
+  persistState({ zoomLevel: level })
 }
+migrateShellState() // must precede the module-level zoom read below
 const initialZoom = Number(loadState().zoomLevel) || 0
 
 function adjustZoom(dir) {
@@ -740,19 +774,20 @@ async function pollNotifications() {
   setTimeout(pollNotifications, 8000)
 }
 
-// ---- "子 Agent 模型" dialog: one dynamic user preset `fc-child` + the
-// official default-preset switch, all driven from the shell (the official
-// per-session switcher UI is disabled via --patch).
-const { generateFcChild, installRouterPreset, installMinimalGitbash, fcChildDir } = require('./preset-gen.cjs')
+// ---- 「省钱模式」(economy) + experiment overlay (anchored/router) ----
+// plan_v0.4.2: the model dialog drives the BASE preset (official modes +
+// economy); the titlebar toggles drive the EXPERIMENT overlay (anchored /
+// router, mutually exclusive). One state object { basePreset, experiment },
+// one transition path, one serial queue (fast double-clicks must not
+// interleave two IPC calls). The old fc-child fusion is legacy: hidden,
+// NEVER regenerated, its dir untouched so old sessions resume.
+const {
+  generateEconomy, readEconomyRoute, economyEngineVersion, engineVersion,
+  installAnchoredPreset, installRouterPreset,
+  economyDir, fcChildDir,
+} = require('./preset-gen.cjs')
 
-// Generate the ONE user preset `fc-child` (display name「自定义子模型」) from
-// the bundled anchored-standard template with the child-model agentOptions
-// injected — re-applying a model re-derives everything from the current
-// template (upstream xiaobright/dsh-anchored-standard).
-function writeFcChild(modelId) {
-  generateFcChild(modelId, { desktopDir: __dirname })
-}
-
+// Legacy: read the OLD fc-child fusion's injected model (migration only).
 function readFcChildModel() {
   try {
     const text = fs.readFileSync(path.join(fcChildDir(), 'agent.cordis.yml'), 'utf8')
@@ -761,6 +796,24 @@ function readFcChildModel() {
   } catch {
     return null
   }
+}
+
+// Economy maintenance (plan §2.4): economy is generated from the VENDORED
+// standard, so it must track the vendored engine. Runs BEFORE the backend
+// spawns (pure file generation — the stored pair was validated when the user
+// applied it; a later catalog change fails visibly at spawn, never silently).
+function maintainEconomyPreset() {
+  try {
+    const mode = loadModeState()
+    const route = readEconomyRoute() || mode.economyRoute
+    if (!route) return
+    const vendored = engineVersion(__dirname)
+    const economyYml = path.join(economyDir(), 'agent.cordis.yml')
+    if (!fs.existsSync(economyYml) || economyEngineVersion() !== vendored) {
+      generateEconomy({ ...route, desktopDir: __dirname })
+      log('economy generated/regenerated (engine ' + vendored + '):', route.providerId + '/' + route.modelId)
+    }
+  } catch (e) { log('economy maintenance failed:', String((e && e.message) || e)) }
 }
 
 async function restartHarness() {
@@ -797,36 +850,91 @@ function openModelDialog() {
 }
 
 ipcMain.handle('model-dialog:get-data', async () => {
-  const [catalog, presets] = await Promise.all([
-    httpRpc('llm.models'),
-    httpRpc('agentPreset.list'),
-  ])
-  const groups = (catalog.groups || []).map((g) => ({
-    provider: g.name || g.id,
-    models: (g.models || []).map((m) => ({
-      id: typeof m === 'string' ? m : (m.id || m.model),
-      chat: modelChatCapable(m),
-    })).filter((m) => m.id),
-  }))
-  // Hide legacy fc-* presets from earlier iterations (their directories stay
-  // on disk because live sessions still reference them in their headers), and
-  // the third-party router/gitbash presets — the picker shows the official
-  // four modes plus 自定义子模型 only (user request, v0.3.5).
+  const mode = loadModeState()
+  // The catalog is ADVISORY: a transient llm.models failure must NOT read as
+  // "your saved model is gone" — the dialog shows a separate banner and never
+  // clears the saved pair (plan §2.6).
+  let groups = []
+  let groupsError = null
+  try {
+    const catalog = await httpRpc('llm.models')
+    groups = (catalog.groups || []).map((g) => ({
+      provider: g.name || g.id,
+      providerId: g.id, // route id — the id used for requests (name is display-only)
+      models: (g.models || []).map((m) => ({
+        id: typeof m === 'string' ? m : (m.id || m.model),
+        chat: modelChatCapable(m),
+      })).filter((m) => m.id),
+    }))
+  } catch (e) {
+    groupsError = '模型目录暂不可用（' + String((e && e.message) || e) + '）'
+  }
+  const presets = await httpRpc('agentPreset.list')
+  // Hidden from the picker: legacy fc-* (old sessions still reference them),
+  // fc-child (legacy fusion), and the two experiment presets + minimal-gitbash
+  // (managed by the titlebar toggles / legacy-only, not pickable here).
   const LEGACY_FC = /^fc-(?!child$)/
-  const HIDDEN_PRESETS = new Set(['minimal-gitbash', 'router-standard'])
+  const HIDDEN_PRESETS = new Set(['fc-child', 'minimal-gitbash', 'router-standard', 'anchored-standard'])
   return {
     groups,
+    groupsError,
     presets: (presets.presets || []).filter((p) => !LEGACY_FC.test(p.id) && !HIDDEN_PRESETS.has(p.id)),
-    currentModel: readFcChildModel(),
+    economyRoute: readEconomyRoute(),
+    defaultPreset: ((presets.presets || []).find((p) => p.isDefault) || {}).id || null,
+    basePreset: mode.basePreset,
+    experiment: mode.experiment,
   }
 })
 
-// Switch the global DEFAULT preset (official hot-reload, no restart).
-// Choosing fc-child materializes it once so the model picker has a target.
+// ---- mode state machine (plan_v0.4.2 §0): the single source of truth ----
+// basePreset ∈ official presets + 'economy' + custom-*; experiment ∈
+// {off, anchored, router}; effectivePreset = experiment off ? basePreset :
+// 'anchored-standard' / 'router-standard'. BOTH UIs (dialog picker + titlebar
+// toggles) only mutate this state; every mode operation runs through the
+// serial queue so two interleaved IPC calls can never race (double-clicks).
+const EXPERIMENT_PRESETS = { anchored: 'anchored-standard', router: 'router-standard' }
+let modeQueue = Promise.resolve()
+function enqueueMode(fn) {
+  const run = modeQueue.then(fn, fn) // run regardless of the predecessor's outcome
+  modeQueue = run.then(() => {}, () => {}) // keep the chain alive after failures
+  return run
+}
+function loadModeState() {
+  const st = loadState().mode || {}
+  const experiment = ['anchored', 'router'].includes(st.experiment) ? st.experiment : 'off'
+  return {
+    basePreset: typeof st.basePreset === 'string' ? st.basePreset : null,
+    experiment,
+    economyRoute: st.economyRoute || null,
+  }
+}
+function persistModeState(mode) {
+  persistState({ mode: { basePreset: mode.basePreset, experiment: mode.experiment, economyRoute: mode.economyRoute || null } })
+  pushPresetState()
+}
+function effectivePresetOf(mode) {
+  return mode.experiment === 'off' ? (mode.basePreset || 'standard') : EXPERIMENT_PRESETS[mode.experiment]
+}
+function pushPresetState() {
+  const mode = loadModeState()
+  const state = { experiment: mode.experiment, effective: effectivePresetOf(mode) }
+  if (titlebarView && !titlebarView.webContents.isDestroyed()) {
+    titlebarView.webContents.send('preset-state', state)
+  }
+  return state
+}
+async function readDefaultPreset() {
+  const presets = await httpRpc('agentPreset.list')
+  const def = (presets.presets || []).find((p) => p.isDefault)
+  return def ? def.id : null
+}
+
 // Blank sessions are re-pointed too: the official "New Session" reuses a
 // blank session whose header still names the preset it was created with, so
 // without this sync a fresh conversation can land on a stale legacy preset
-// (observed live: default fc-child but the new session ran fc-pro).
+// (observed live: default fc-child but the new session ran fc-pro). Every
+// failure is LOGGED — a silent catch here would claim success in the UI
+// while the new conversation actually runs the old preset.
 async function syncBlankSessionsTo(agentPreset) {
   try {
     const sl = await httpRpc('session.list')
@@ -834,80 +942,228 @@ async function syncBlankSessionsTo(agentPreset) {
       if (!s.blank || s.parentSessionId || s.agentPreset === agentPreset) continue
       try {
         await httpRpc('agentPreset.select', { sessionId: s.sessionId, agentPreset })
-      } catch {
-        // individual blanks may refuse (resume quirks) — never block the switch
+      } catch (e) {
+        log('blank session sync FAILED (never silently claim success):', s.sessionId, '→', agentPreset, String((e && e.message) || e))
       }
     }
-  } catch { /* backend busy or gone */ }
+  } catch (e) {
+    log('blank session sync list failed:', String((e && e.message) || e))
+  }
 }
 
-ipcMain.handle('model-dialog:set-default', async (_e, { agentPreset }) => {
-  if (agentPreset === 'fc-child' && readFcChildModel() === null) {
-    // Materialize fc-child with a sensible child model. The apply path gates
-    // with isChatModel, but a direct default switch reaches here first — pick
-    // the first CHAT-capable model instead of whatever the catalog lists first
-    // (the first group may be ASR/TTS-only).
-    const catalog = await httpRpc('llm.models')
-    let fallback = null
-    for (const g of catalog.groups || []) {
-      for (const m of g.models || []) {
-        if (modelChatCapable(m)) {
-          fallback = typeof m === 'string' ? m : (m.id || m.model)
-          break
-        }
-      }
-      if (fallback) break
-    }
-    writeFcChild(fallback || 'deepseek-v4-flash')
+// Validate + generate + switch + verify: the economy apply lifecycle
+// (plan §2.4). confirm=false is the fc-child migration path (no dialog).
+async function applyEconomyRoute({ providerId, modelId }, { confirm = true } = {}) {
+  // 1. Validate against the catalog. A catalog FAILURE is a transient
+  // condition ("暂无法验证"), NOT proof the model is gone — the caller
+  // distinguishes. A pair absent from a SUCCESSFUL catalog = refuse.
+  let catalog
+  try {
+    catalog = await httpRpc('llm.models')
+  } catch (e) {
+    throw new Error('模型目录暂不可用（后端未就绪或临时故障），请稍后重试')
   }
-  if (agentPreset === 'router-standard') installRouterPreset({ desktopDir: __dirname })
-  if (agentPreset === 'minimal-gitbash') installMinimalGitbash({ desktopDir: __dirname })
-  await httpRpc('settings.update', { ns: 'agent-presets', patch: { default: agentPreset } })
-  await syncBlankSessionsTo(agentPreset)
+  let found = null
+  for (const g of catalog.groups || []) {
+    if (g.id !== providerId) continue
+    for (const m of g.models || []) {
+      const id = typeof m === 'string' ? m : (m.id || m.model)
+      if (id === modelId) { found = { providerId: g.id, modelId: id, chat: modelChatCapable(m) }; break }
+    }
+    if (found) break
+  }
+  if (!found) throw new Error(`所选模型 ${providerId}/${modelId} 已不在目录中，请重新选择（绝不静默继承主 Agent 模型）`)
+  if (!found.chat) throw new Error(`「${modelId}」不是文本推理模型，不能作为子 Agent 模型`)
+  if (confirm) {
+    const busy = await countRunningSessions()
+    const message = busy > 0
+      ? `即将启用「省钱模式」并将子 Agent 路由切换为 ${providerId}/${modelId}。\n\n⚠ 此操作会重启后端；当前有 ${busy} 个活跃对话，重启会中断它们（思考/执行/回复中的任务会丢失）！`
+      : `即将启用「省钱模式」并将子 Agent 路由切换为 ${providerId}/${modelId}。\n\n⚠ 此操作会重启后端（约半分钟）；当前没有活跃对话。`
+    const choice = await showShellDialog({
+      title: '重启后端确认',
+      message,
+      buttons: ['确认重启并切换', '取消'],
+      danger: busy > 0,
+    })
+    if (choice !== 0) return { ok: false, canceled: true }
+    // Confirmed: tell the dialog to show the committing stage before the
+    // long backend restart blocks the IPC roundtrip.
+    if (modelDialog && !modelDialog.isDestroyed()) {
+      modelDialog.webContents.send('apply-stage', 'committing')
+    }
+  }
+  // 2. Atomic generation, then switch default + sync blanks, then restart.
+  generateEconomy({ providerId, modelId, desktopDir: __dirname })
+  await httpRpc('settings.update', { ns: 'agent-presets', patch: { default: 'economy' } })
+  await syncBlankSessionsTo('economy')
+  await restartHarness()
+  // 3. Confirm the preset actually mounted, then update the mode state —
+  // never claim success from injection alone.
+  const presets = await httpRpc('agentPreset.list')
+  if (!(presets.presets || []).some((p) => p.id === 'economy')) {
+    throw new Error('economy 预设未挂载（重启后 agentPreset.list 未见 economy）')
+  }
+  persistModeState({ basePreset: 'economy', experiment: 'off', economyRoute: { providerId, modelId } })
+  log('economy applied:', providerId + '/' + modelId)
   return { ok: true }
+}
+
+// Set the BASE preset (official modes / custom copies). While an experiment
+// overlay is active the default stays the experiment preset — the pick is
+// recorded and becomes effective when the overlay turns off.
+async function setBasePreset(presetId) {
+  const mode = loadModeState()
+  if (mode.experiment !== 'off') {
+    persistModeState({ ...mode, basePreset: presetId })
+    log('base preset recorded (experiment', mode.experiment, 'active):', presetId)
+    return { ok: true, pending: true }
+  }
+  await httpRpc('settings.update', { ns: 'agent-presets', patch: { default: presetId } })
+  await syncBlankSessionsTo(presetId)
+  persistModeState({ ...mode, basePreset: presetId })
+  log('base preset switched to:', presetId)
+  return { ok: true }
+}
+
+// Experiment overlay toggle (plan §0): mutually exclusive by construction
+// (the default preset is single-valued). Turning the ACTIVE one off restores
+// the base preset; turning one ON installs the verbatim preset first — a
+// refused install (e.g. no Git Bash for anchored) leaves everything as-is.
+async function toggleExperiment(kind) {
+  const mode = loadModeState()
+  const presetId = EXPERIMENT_PRESETS[kind]
+  if (mode.experiment === kind) {
+    const base = mode.basePreset || 'standard'
+    await httpRpc('settings.update', { ns: 'agent-presets', patch: { default: base } })
+    await syncBlankSessionsTo(base)
+    persistModeState({ ...mode, experiment: 'off' })
+    log('experiment off →', base)
+    return { ok: true, experiment: 'off', effective: base }
+  }
+  const installed = kind === 'anchored'
+    ? installAnchoredPreset({ desktopDir: __dirname })
+    : installRouterPreset({ desktopDir: __dirname })
+  if (!installed.ok) throw new Error(installed.error)
+  if (kind === 'anchored') {
+    log('anchored experiment installed (upstream', String(installed.upstream).slice(0, 8) + ', adapted bashPath →', installed.adapted.bashPath + ')')
+  } else {
+    log('router experiment installed (suite', String(installed.suite).slice(0, 8), 'preset', String(installed.upstream).slice(0, 8) + ')')
+  }
+  await httpRpc('settings.update', { ns: 'agent-presets', patch: { default: presetId } })
+  await syncBlankSessionsTo(presetId)
+  persistModeState({ ...mode, experiment: kind })
+  return { ok: true, experiment: kind, effective: presetId }
+}
+
+ipcMain.handle('preset-toggle', async (_e, { experiment }) => {
+  if (!['anchored', 'router'].includes(experiment)) throw new Error('未知实验开关')
+  try {
+    return await enqueueMode(() => toggleExperiment(experiment))
+  } catch (e) {
+    await showShellDialog({ title: '实验开关', message: `无法切换：${String((e && e.message) || e)}`, danger: true })
+    pushPresetState()
+    return { ok: false, error: String((e && e.message) || e) }
+  }
 })
 
-// Draft-commit apply: the dialog only STAGES changes; this single handler
-// commits them (close-without-apply discards everything).
-//   enableFc=true  → confirm dialog (restart warning) → rewrite fc-child +
-//                    default=fc-child → restart backend.
-//   enableFc=false → default=presetId (official hot-reload, no restart).
-ipcMain.handle('model-dialog:apply', async (_e, { enableFc, modelId, presetId }) => {
-  log('model apply:', 'enableFc=' + Boolean(enableFc), 'modelId=' + (modelId || ''), 'presetId=' + (presetId || ''))
-  if (!enableFc) {
-    if (presetId === 'router-standard') installRouterPreset({ desktopDir: __dirname })
-    if (presetId === 'minimal-gitbash') installMinimalGitbash({ desktopDir: __dirname })
-    await httpRpc('settings.update', { ns: 'agent-presets', patch: { default: presetId || 'standard' } })
-    await syncBlankSessionsTo(presetId || 'standard')
-    return { ok: true }
+// Draft-commit apply (the dialog only STAGES changes; this single handler
+// commits them — close-without-apply discards everything).
+//   enableEconomy=true  → validate → confirm (restart warning) → generate
+//                         economy + default=economy → restart → verify mount.
+//   enableEconomy=false → base preset switch (official hot-reload; recorded
+//                         only while an experiment overlay is active).
+ipcMain.handle('model-dialog:apply', async (_e, draft) => {
+  if (draft.enableEconomy) {
+    if (!draft.providerId || !draft.modelId) throw new Error('未选择模型')
+    log('model apply: economy', draft.providerId + '/' + draft.modelId)
+    return await enqueueMode(() => applyEconomyRoute({ providerId: draft.providerId, modelId: draft.modelId }))
   }
-  if (!modelId) throw new Error('未选择模型')
-  // Second gate: never let a non-text model (ASR/TTS/voice) become the child.
-  if (!(await isChatModel(modelId))) {
-    throw new Error(`「${modelId}」不是文本推理模型，不能作为子 Agent 模型`)
-  }
-  const busy = await countRunningSessions()
-  const message = busy > 0
-    ? `即将启用「自定义子模型」并将子模型切换为 ${modelId}。\n\n⚠ 此操作会重启后端；当前有 ${busy} 个活跃对话，重启会中断它们（思考/执行/回复中的任务会丢失）！`
-    : `即将启用「自定义子模型」并将子模型切换为 ${modelId}。\n\n⚠ 此操作会重启后端（约半分钟）；当前没有活跃对话。`
-  const choice = await showShellDialog({
-    title: '重启后端确认',
-    message,
-    buttons: ['确认重启并切换', '取消'],
-    danger: busy > 0,
-  })
-  if (choice !== 0) return { ok: false, canceled: true }
-  // Confirmed: tell the dialog to show the committing stage before the
-  // long backend restart blocks the IPC roundtrip.
-  if (modelDialog && !modelDialog.isDestroyed()) {
-    modelDialog.webContents.send('apply-stage', 'committing')
-  }
-  writeFcChild(modelId)
-  await httpRpc('settings.update', { ns: 'agent-presets', patch: { default: 'fc-child' } })
-  await syncBlankSessionsTo('fc-child')
-  await restartHarness()
-  return { ok: true }
+  const presetId = draft.presetId || 'standard'
+  log('model apply: base preset', presetId)
+  return await enqueueMode(() => setBasePreset(presetId))
 })
+
+// Reconcile the persisted mode state with the engine's ACTUAL default — the
+// engine is reality. Divergence (e.g. ~/.dsh wiped, or the default changed by
+// another client) adopts reality and is logged, never silently papered over.
+async function reconcileModeState() {
+  const actual = await readDefaultPreset()
+  const mode = loadModeState()
+  let next = mode
+  if (actual === EXPERIMENT_PRESETS.anchored) next = { ...mode, experiment: 'anchored' }
+  else if (actual === EXPERIMENT_PRESETS.router) next = { ...mode, experiment: 'router' }
+  else if (actual) next = { basePreset: actual, experiment: 'off' }
+  if (next.basePreset !== mode.basePreset || next.experiment !== mode.experiment) {
+    log('mode state reconciled:', JSON.stringify(mode), '→', JSON.stringify(next), '(engine default:', actual + ')')
+    persistModeState(next)
+  } else {
+    pushPresetState()
+  }
+  return next
+}
+
+// First CHAT-capable pair in the catalog — the migration fallback when the
+// legacy preset never had a model chosen.
+async function defaultEconomyPair() {
+  const catalog = await httpRpc('llm.models')
+  for (const g of catalog.groups || []) {
+    for (const m of g.models || []) {
+      if (modelChatCapable(m)) {
+        return { providerId: g.id, modelId: (typeof m === 'string' ? m : (m.id || m.model)) }
+      }
+    }
+  }
+  return null
+}
+
+// fc-child legacy migration (plan §2.5): 0.4.1's default is the old anchored
+// fusion. First 0.4.2 run with default == fc-child migrates the model choice
+// into economy — the fc-child dir itself is NEVER touched, so old sessions
+// keep resuming. Failure keeps the old default and prompts, never a silent
+// half-state.
+async function migrateLegacyFcChild() {
+  try {
+    const actual = await readDefaultPreset()
+    if (actual !== 'fc-child') return
+    const legacyModel = readFcChildModel()
+    log('legacy default fc-child detected — migrating to economy (legacy model:', legacyModel || 'none', ')')
+    if (!legacyModel) {
+      const pair = await defaultEconomyPair()
+      if (pair) {
+        await applyEconomyRoute(pair, { confirm: false })
+        return
+      }
+      throw new Error('no legacy model and no catalog pair to migrate to')
+    }
+    const catalog = await httpRpc('llm.models')
+    const matches = []
+    for (const g of catalog.groups || []) {
+      for (const m of g.models || []) {
+        const id = typeof m === 'string' ? m : (m.id || m.model)
+        if (id === legacyModel) matches.push({ providerId: g.id, modelId: id, chat: modelChatCapable(m) })
+      }
+    }
+    const chat = matches.filter((m) => m.chat)
+    const pool = chat.length ? chat : matches
+    if (pool.length === 1) {
+      await applyEconomyRoute(pool[0], { confirm: false })
+    } else if (pool.length > 1) {
+      log('fc-child migration: model', legacyModel, 'exists in', pool.length, 'providers — user must choose')
+      await showShellDialog({
+        title: '省钱模式迁移',
+        message: `检测到旧版「自定义子模型」（fc-child）仍为默认模式，且其子模型 ${legacyModel} 在多个服务商中存在。\n\n请打开「模式切换」手动选择省钱模式与对应服务商；旧默认保持不变。`,
+      })
+    } else {
+      log('fc-child migration: model', legacyModel, 'not in catalog — keeping fc-child default')
+      await showShellDialog({
+        title: '省钱模式迁移',
+        message: `检测到旧版「自定义子模型」（fc-child）仍为默认模式，但其子模型 ${legacyModel} 已不存在。\n\n请打开「模式切换」手动选择省钱模式与新子模型；旧默认保持不变。`,
+      })
+    }
+  } catch (e) {
+    log('fc-child migration failed (keeping old default):', String((e && e.message) || e))
+  }
+}
 
 ipcMain.handle('model-dialog:copy', async (_e, { from, name }) => {
   const value = await httpRpc('agentPreset.copy', {
@@ -944,17 +1200,6 @@ function modelChatCapable(m) {
   const name = typeof m === 'object' ? (m.name || '') : ''
   const hasReasoning = typeof m === 'object' && m.reasoning !== undefined
   return hasReasoning && !ASR_TTS_RE.test(String(id)) && !ASR_TTS_RE.test(String(name))
-}
-
-async function isChatModel(modelId) {
-  const catalog = await httpRpc('llm.models')
-  for (const g of catalog.groups || []) {
-    for (const m of g.models || []) {
-      const id = typeof m === 'string' ? m : (m.id || m.model)
-      if (id === modelId) return modelChatCapable(m)
-    }
-  }
-  return false
 }
 
 // ---- theme follow: read the official page's actual light/dark state ----
@@ -1225,8 +1470,14 @@ ipcMain.handle('proxy-dialog:get', () => proxyParts())
 ipcMain.handle('proxy-dialog:save', async (_e, { http, https }) => {
   const norm = (v) => {
     let s = String(v || '').trim()
-    // Friendly bare-address handling: "127.0.0.1:10809" → "http://127.0.0.1:10809".
-    if (s && !/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) s = `http://${s}`
+    // Friendly bare-address handling: "127.0.0.1:10809" → "http://127.0.0.1:10809",
+    // bare port "10809" → "http://127.0.0.1:10809" (a bare port without a host
+    // would become "http://10809" and break every proxied request — regression
+    // reported 2026-08-17).
+    if (s && !/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
+      if (/^\d+$/.test(s)) s = `127.0.0.1:${s}`
+      s = `http://${s}`
+    }
     return s
   }
   const h = norm(http)
@@ -1525,6 +1776,112 @@ try {
   updater = null
 }
 
+// ---- upstream component updates (upstream-update.cjs, pure node) ----
+let upstream = null
+try {
+  upstream = require('./upstream-update.cjs') // eslint-disable-line global-require
+} catch (e) {
+  upstream = null
+}
+
+let componentDialog = null
+
+function openComponentDialog() {
+  if (componentDialog) {
+    componentDialog.focus()
+    return
+  }
+  componentDialog = new BrowserWindow({
+    width: 620,
+    height: 520,
+    frame: false,
+    resizable: false,
+    backgroundColor: '#0f172a',
+    parent: win || undefined,
+    webPreferences: { preload: path.join(__dirname, 'component-preload.js'), contextIsolation: true },
+  })
+  componentDialog.loadFile(path.join(__dirname, 'component-dialog.html'))
+  componentDialog.webContents.on('did-finish-load', () => pushTheme(componentDialog.webContents))
+  componentDialog.on('closed', () => {
+    componentDialog = null
+    if (win && !win.isDestroyed()) win.focus()
+  })
+}
+
+ipcMain.on('component-dialog:close', () => {
+  if (componentDialog) componentDialog.close()
+})
+
+ipcMain.handle('component-update:list', async () => {
+  if (!upstream) return { gitAvailable: false, error: '组件更新模块未加载' }
+  const gitAvailable = Boolean(upstream.findGit())
+  const components = Object.keys(upstream.COMPONENTS).map((id) => {
+    try {
+      return upstream.componentStatus(id)
+    } catch (e) {
+      return { id, label: id, error: String((e && e.message) || e) }
+    }
+  })
+  return { gitAvailable, components }
+})
+
+// Updates/reverts run on the serial queue: two dialog clicks can never race.
+// The engine enumerates presets at START, so a runtime install needs a
+// backend restart to become visible — after restarting we re-check the live
+// list and auto-revert if the new version fails to mount (plan §6.1).
+ipcMain.handle('component-update:do', async (_e, { id }) => {
+  if (!upstream) throw new Error('组件更新模块未加载')
+  return enqueueMode(async () => {
+    try {
+      const r = await upstream.updateComponent(id, { onStep: (s) => log('component update [' + id + ']:', s) })
+      log('component updated:', id, '→', r.commit.slice(0, 8), 'restartRequired=' + r.restartRequired)
+      if (r.ok && !r.alreadyUpToDate && r.restartRequired) {
+        const busy = await countRunningSessions()
+        const choice = await showShellDialog({
+          title: '组件已更新',
+          message: `「${id}」已更新到 ${r.commit.slice(0, 8)}${r.suiteCommit ? '（suite ' + r.suiteCommit.slice(0, 8) + '）' : ''}。\n\n后端需重启才会加载新预设；当前${busy ? `有 ${busy} 个活跃对话，重启会中断它们（进行中的任务会丢失）` : '没有活跃对话'}。重启后会自动验证新预设可挂载，失败则自动回退。`,
+          buttons: ['重启后端', '稍后重启'],
+          danger: busy > 0,
+        })
+        if (choice === 0) {
+          await restartHarness()
+          const list = await httpRpc('agentPreset.list')
+          if (!(list.presets || []).some((p) => p.id === id)) {
+            await upstream.revertComponent(id)
+            throw new Error(`重启后「${id}」未能挂载（对当前引擎不兼容），已自动回退到上一版`)
+          }
+          r.mounted = true
+          log('component mount verified after restart:', id)
+        }
+      }
+      return r
+    } catch (e) {
+      log('component update FAILED [' + id + ']:', String((e && e.message) || e))
+      throw e
+    }
+  })
+})
+
+ipcMain.handle('component-update:revert', async (_e, { id }) => {
+  if (!upstream) throw new Error('组件更新模块未加载')
+  return enqueueMode(async () => {
+    try {
+      const r = await upstream.revertComponent(id)
+      log('component reverted:', id, '→', r.commit.slice(0, 8), 'restartRequired=' + r.restartRequired)
+      if (r.restartRequired) {
+        await showShellDialog({
+          title: '已回退',
+          message: `「${id}」已回退到 ${r.commit.slice(0, 8)}。后端重启后生效（新对话使用回退版）。`,
+        })
+      }
+      return r
+    } catch (e) {
+      log('component revert FAILED [' + id + ']:', String((e && e.message) || e))
+      throw e
+    }
+  })
+})
+
 // ---- self-drawn dialog (replaces the ugly system message boxes) ----
 let shellDialogWin = null
 let shellDialogResolver = null
@@ -1594,15 +1951,19 @@ function checkUpdateInteractive() {
         return `${x.note || x.name}：${x.hasUpdate ? `🟢 有更新（${x.detail}）` : `✓ 最新（${x.detail}）`}`
       })
       const official = (r.results || []).find((x) => x.name === 'harness')
+      const compUpdate = (r.results || []).some((x) => ['anchored', 'router', 'gitbash'].includes(x.name) && x.hasUpdate)
+      const buttons = compUpdate ? ['知道了', '更新上游组件'] : ['知道了']
       if (official && official.hasUpdate) {
-        await showShellDialog({
+        const choice = await showShellDialog({
           title: '检查更新',
-          message: `${lines.join('\n')}\n\n0.4.0 起官方后端随绿色版整包发布：下载新版绿色版即可完成升级（旧版不受影响）。其余三路（本应用/锚定模板/GitBash 执行器）请在 Git 仓库侧跟进。`,
-          buttons: ['知道了'],
+          message: `${lines.join('\n')}\n\n0.4.0 起官方后端随绿色版整包发布：下载新版绿色版即可完成升级（旧版不受影响）。其余四路（本应用/锚定模板/路由/ GitBash 执行器）请在 Git 仓库侧跟进。`,
+          buttons,
         })
+        if (choice === 1) openComponentDialog()
         return
       }
-      await showShellDialog({ title: '检查更新', message: lines.join('\n') })
+      const choice = await showShellDialog({ title: '检查更新', message: lines.join('\n'), buttons })
+      if (choice === 1) openComponentDialog()
     },
   })
 }
@@ -1721,6 +2082,7 @@ async function main() {
   app.on('will-quit', () => globalShortcut.unregisterAll())
 
   ensurePortableAgents()
+  maintainEconomyPreset() // economy must track the vendored engine (pure fs, pre-spawn)
   setLoadingStatus('正在启动后端…')
   startHarness()
   try {
@@ -1736,6 +2098,11 @@ async function main() {
     setTimeout(() => app.quit(), 2500) // leave the error visible for a moment
     return
   }
+
+  // Mode state: adopt engine reality first, then migrate a legacy fc-child
+  // default into economy (may restart the backend; after ready, safe).
+  await reconcileModeState()
+  await migrateLegacyFcChild()
 
   if (!SMOKE_MS) {
     pollNotifications()

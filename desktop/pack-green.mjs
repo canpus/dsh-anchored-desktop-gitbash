@@ -73,29 +73,39 @@ robocopy(
   path.join(__dirname, 'node_modules', 'electron', 'dist'),
   path.join(STAGE, 'desktop', 'node_modules', 'electron', 'dist'),
 )
-for (const f of ['rpc-test.mjs', 'ui-drive.mjs', 'package-lock.json', 'gen-icons.js', 'pack-green.mjs', 'zip-write.mjs', 'fetch-vendor.cjs', 'preset-mount-test.cjs', 'relink.mjs']) {
+for (const f of ['rpc-test.mjs', 'ui-drive.mjs', 'package-lock.json', 'gen-icons.js', 'pack-green.mjs', 'zip-write.mjs', 'fetch-vendor.cjs', 'preset-mount-test.cjs', 'relink.mjs', 'sync-templates.mjs', 'route-probe.cjs']) {
   fs.rmSync(path.join(STAGE, 'desktop', f), { force: true })
 }
-// 0.4.0 experiment leftovers (封存): the 0.3.9 fc-child template has no anchor
-// turn / compaction-epoch plugins — they must not ship.
-for (const f of ['anchor-turn.mjs', 'compaction-epoch.mjs']) {
-  fs.rmSync(path.join(STAGE, 'desktop', 'presets', 'fc-child-fusion', f), { force: true })
+// 0.4.2: the anchored-fusion template (fc-child, A-G era research) and the
+// standalone-preset sources are dev-side — they must not ship in the green
+// package (economy generates from the vendored engine at runtime; the
+// standalone preset zip is built separately below).
+for (const d of ['presets/fc-child-fusion', 'preset-standalone']) {
+  fs.rmSync(path.join(STAGE, 'desktop', d), { recursive: true, force: true })
 }
 
 log('bundle node.exe (the runtime this script runs under)')
 fs.copyFileSync(process.execPath, path.join(STAGE, 'desktop', 'node.exe'))
 
 log('write launcher + readme + user guide')
+// 启动日志管道 (项目 AGENTS §3.2) + 无控制台窗口 (两次回归教训):
+//   ≤0.4.1 `start "" exe >> log`: redirect bound to `start` — child output
+//     DISCARDED (launch.log held only the timestamp).
+//   0.4.2 D91 `start "" cmd /c "… >> log"`: captured, but a persistent black
+//     console window (user-reported regression).
+//   now: bat → wscript //B launcher.vbs (GUI subsystem, window style 0) →
+//     node launcher.js → electron with windowsHide + pipes → launch.log.
+//     Full capture, zero console windows.
 fs.writeFileSync(
   path.join(STAGE, '启动.bat'),
-  '@echo off\r\necho [launch %date% %time%] >> "%~dp0launch.log"\r\nstart "" "%~dp0desktop\\node_modules\\electron\\dist\\electron.exe" "%~dp0desktop\\main.js" >> "%~dp0launch.log" 2>&1\r\n',
+  '@echo off\r\necho [launch %date% %time%] >> "%~dp0launch.log"\r\nwscript //B "%~dp0desktop\\launcher.vbs"\r\n',
 )
 fs.writeFileSync(path.join(STAGE, '说明.txt'), [
   'DeepSeek Harness 桌面版（绿色版）— 快速上手',
   '',
   '1. 双击「启动.bat」，几秒内自动打开应用窗口（无需联网、无需预装 Node）。',
   '2. 在应用内「设置」填写 DeepSeek API Key。',
-  '3. 完整使用说明（重点：如何开启「自定义子模型」模式）见「用户指南.md」。',
+  '3. 完整使用说明（重点：如何开启「省钱模式」与实验开关）见「用户指南.md」。',
   '',
   '卸载：删除整个文件夹。数据目录 %USERPROFILE%\\.dsh 会保留。',
 ].join('\r\n'))
@@ -145,10 +155,21 @@ const required = [
   'desktop/vendor/node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html',
   'desktop/vendor/node_modules/@deepseek-ai/dsh/config/agent-presets/standard/agent.cordis.yml',
   'desktop/vendor/node_modules/@deepseek-ai/dsh/config/agent-presets/minimal/agent.cordis.yml',
+  'desktop/presets/anchored-standard/.manifest.json',
   'desktop/presets/anchored-standard/agent.cordis.yml',
+  'desktop/presets/anchored-standard/preset.yml',
+  'desktop/presets/anchored-standard/tool-bootstrap.mjs',
+  'desktop/presets/anchored-standard/compaction-epoch.mjs',
+  'desktop/presets/anchored-standard/custom-bash.mjs',
+  'desktop/presets/anchored-standard/dev-tool-search.mjs',
+  'desktop/presets/anchored-standard/instruction-hint.mjs',
+  'desktop/presets/anchored-standard/skill-search.mjs',
   'desktop/presets/anchored-standard/LICENSE',
   'desktop/presets/anchored-standard/NOTICE',
+  'desktop/presets/router-standard/.manifest.json',
   'desktop/presets/router-standard/agent.cordis.yml',
+  'desktop/presets/router-standard/preset.yml',
+  'desktop/presets/router-standard/router-bootstrap-v1.mjs',
   'desktop/presets/router-standard/router-bootstrap.mjs',
   'desktop/presets/router-standard/router-core.mjs',
   'desktop/presets/router-standard/LICENSE',
@@ -157,10 +178,13 @@ const required = [
   'desktop/presets/minimal-gitbash/gitbash-executor.mjs',
   'desktop/presets/minimal-gitbash/preset.yml',
   'desktop/presets/minimal-gitbash/LICENSE',
-  'desktop/presets/fc-child-fusion/agent.cordis.yml',
-  'desktop/presets/fc-child-fusion/tool-bootstrap.mjs',
-  'desktop/presets/fc-child-fusion/gitbash-executor.mjs',
   'desktop/preset-gen.cjs',
+  'desktop/component-defs.cjs',
+  'desktop/upstream-update.cjs',
+  'desktop/component-dialog.html',
+  'desktop/component-preload.js',
+  'desktop/launcher.js',
+  'desktop/launcher.vbs',
 ]
 const forbidden = [
   'DeepSeek-Harness/third-party', // project-root third-party/ — upstream repo has its own legit "third-party" files
@@ -175,8 +199,10 @@ const forbidden = [
   'zip-write.mjs',
   'fetch-vendor.cjs',
   'relink.mjs',
-  'anchor-turn.mjs',
-  'compaction-epoch.mjs',
+  'fc-child-fusion', // sealed A-G era research template — never ships (its anchor-turn/compaction-epoch plugins live inside)
+  'preset-standalone', // standalone preset sources ship as their own zip, not in the green package
+  'sync-templates.mjs',
+  'route-probe.cjs',
   'link-manifest.json',
 ]
 let ok = true
@@ -273,4 +299,52 @@ for (const f of fs.readdirSync(DIST)) {
     }
   } catch { /* not a dir we manage */ }
 }
+// ---- economy standalone preset package (用户指示 2026-08-17) ----
+// 「省钱模式预设」: the economy generator + the official standard snapshot
+// (provenance-noted) + install notes. Follows the main program's economy mode
+// on EVERY release — the standard snapshot is taken from the vendored engine
+// at pack time, so it never drifts from what the green package runs.
+function buildStandalonePreset() {
+  const PRESET_STAGE = path.join(DIST, '.economy-preset-stage')
+  fs.rmSync(PRESET_STAGE, { recursive: true, force: true })
+  fs.mkdirSync(PRESET_STAGE, { recursive: true })
+  for (const f of ['install-economy-preset.cjs', '安装说明.md']) {
+    fs.copyFileSync(path.join(__dirname, 'preset-standalone', f), path.join(PRESET_STAGE, f))
+  }
+  const stdDir = path.join(PRESET_STAGE, 'economy-standard')
+  fs.mkdirSync(stdDir, { recursive: true })
+  fs.copyFileSync(
+    path.join(VENDOR, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'standard', 'agent.cordis.yml'),
+    path.join(stdDir, 'agent.cordis.yml'),
+  )
+  const dshPkg = JSON.parse(fs.readFileSync(path.join(VENDOR, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8'))
+  fs.writeFileSync(path.join(stdDir, 'NOTICE'), [
+    'economy-standard includes an adapted copy of the DeepSeek Harness Standard agent preset from:',
+    '',
+    '  https://github.com/deepseek-ai/deepseek-harness',
+    `  npm @deepseek-ai/dsh@${dshPkg.version} (snapshot taken at package time)`,
+    '',
+    'DeepSeek Harness is distributed under the MIT License:',
+    '',
+    '  Copyright (c) 2026 DeepSeek',
+    '',
+    'DeepSeek and DeepSeek Harness are names of their respective owner. This community package is not affiliated with or endorsed by DeepSeek.',
+  ].join('\n') + '\n')
+  const dshLicense = path.join(VENDOR, 'node_modules', '@deepseek-ai', 'dsh', 'LICENSE')
+  if (fs.existsSync(dshLicense)) fs.copyFileSync(dshLicense, path.join(stdDir, 'LICENSE'))
+  const presetZip = path.join(DIST, `DeepSeek-Harness-economy-preset-v${pkg.version}.zip`)
+  fs.rmSync(presetZip, { force: true })
+  const presetCount = writeZip(PRESET_STAGE, presetZip, 'economy-preset')
+  // Verify: entry-count roundtrip + name list from the central directory
+  // (UTF-8 decode, zero codepage conversion — the 安装说明.md name must
+  // survive byte-identical; a bsdtar-style ANSI corruption would not).
+  const presetNames = listZipNames(presetZip)
+  if (presetNames.length !== presetCount || !presetNames.some((n) => n.endsWith('安装说明.md'))) {
+    log(`  economy preset zip verify FAILED: wrote ${presetCount}, listed ${presetNames.length}`)
+    process.exit(1)
+  }
+  fs.rmSync(PRESET_STAGE, { recursive: true, force: true })
+  log(`economy preset package: ${path.relative(ROOT, presetZip)} (${presetCount} entries, names verified)`)
+}
+buildStandalonePreset()
 process.exit(0)

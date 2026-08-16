@@ -34,8 +34,8 @@
 # 5/5 anchored vs 11/11 standard-like for every standard-family schema);
 # after the session records its first durable promotion signal (a tool call OR
 # the first assistant message, default `promoteOn: either`), later steps
-# expose every Standard tool below. `bootstrapMaxTokens` is opt-in for
-# standard-schema bootstraps; unset, the adapter default flows. See
+# narrow to the minimal RESIDENT set (see below). `bootstrapMaxTokens` is
+# opt-in for standard-schema bootstraps; unset, the adapter default flows. See
 # tool-bootstrap.mjs for the other triggers.
 #
 # The same phase gate suppresses AUTO-INJECTED context on request #1:
@@ -46,12 +46,26 @@
 # (`agent-instructions`). User-initiated skill gestures are not filtered, and
 # both injections return unchanged from request #2 on. Set the list to [] to
 # disable the context filter while keeping the tool bootstrap.
+#
+# POST-PROMOTION (local addition): the promoted catalog is NOT the full
+# Standard dump — it stays on the bootstrap pair + the three discovery tools
+# (dev_tool_search / skill_search / skill_load) + whatever the model unlocked
+# via dev_tool_search. Heavier tools are one dev_tool_search away; the
+# trajectory is not pulled back to standard-like behavior by a 25-tool dump.
+#
+# COMPACTION (local addition): after `compaction/end` the session falls back
+# to the controlled phase — bootstrap pair + `compactionTools` — until a NEW
+# durable promotion signal exists past the boundary (epoch-aware, see
+# compaction-epoch.mjs).
 - id: tool-bootstrap
   name: ./tool-bootstrap.mjs
   config:
     bootstrapTools: [bash, str_replace_editor]
     promoteOn: either
     suppressedContextSources: [agent-instructions, skill-catalog]
+    # Post-compaction core work set: the model is mid-task and needs to keep
+    # working, but faces a small catalog instead of the full Standard set.
+    compactionTools: [read, write, edit, glob, grep, todo_write, ask_user_question]
 
 # ── identity ────────────────────────────────────────────────────────────────
 
@@ -66,15 +80,23 @@
     complete: true
     includeRuntimeContext: false
 
-# Mounted for the PROMOTED phase: its `agent/pre-step` workspace-context
-# injection (AGENTS.md / CLAUDE.md digests) is stripped from request #1 by the
-# tool-bootstrap row above, because true Minimal mounts no instruction loader at
-# all. Same reasoning as the persona: the first request must approximate
-# Minimal, not just on the tool catalog but on injected context.
-- id: agent-instructions
-  name: '@deepseek-ai/dsh-agent-instructions'
+# Instruction FILES are NOT injected (replaces dsh-agent-instructions, local
+# addition): the full AGENTS.md/CLAUDE.md digest is a large injected block
+# that perturbs the trajectory even after promotion. Instead, after promotion
+# ONE short hint is injected once per session — "these instruction files
+# exist; read them before acting" — and the model reads the files itself via
+# the filesystem tools when relevant.
+- id: instruction-hint
+  name: ./instruction-hint.mjs
   config:
-    maxBytes: 65536
+    promoteOn: either
+
+# On-demand tool discovery (the tool-search pattern, local addition): the
+# promoted catalog keeps a minimal resident set; heavier Standard tools
+# (web_search, subagent, workflow, …) are unlocked on demand via
+# dev_tool_search.
+- id: dev-tool-search
+  name: ./dev-tool-search.mjs
 
 # ── shell ───────────────────────────────────────────────────────────────────
 
@@ -104,9 +126,14 @@
 # registry is an agent-owned service, so it lives in an entry-local realm; the
 # backend still consumes the host sandbox policy and subprocess implementation,
 # while the tool registers into this agent's scoped catalog.
+#
+# DISABLED ON WINDOWS: DSH's PTY backend is linux/darwin-only, so the
+# persistent shell cannot serve win32. The `custom-bash` row below registers
+# the same `bash` tool name there instead (platform-exclusive).
 - id: persistent-shell
   name: cordis:group
   group: true
+  disabled: !!js process.platform === 'win32'
   isolate:
     terminals: true
   config:
@@ -131,6 +158,19 @@
           * To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.
           * Please avoid commands that may produce a very large amount of output.
           * Please run long lived commands in the background, e.g. 'sleep 10 &' or start a server in the background.
+
+# Windows-only `bash` tool (see custom-bash.mjs): registers the SAME
+# tool name as the persistent shell with a Minimal-compatible description, but
+# executes through the ordinary cross-platform subprocess seam (`bash -c`)
+# instead of a PTY. `bashPath` defaults to `bash` on PATH; point it at Git
+# Bash explicitly when the WSL shim would otherwise be picked up. No OS
+# sandbox confinement on Windows (landlock is linux-only); the tool
+# description says so.
+- id: custom-bash
+  name: ./custom-bash.mjs
+  disabled: !!js process.platform !== 'win32'
+  config:
+    bashPath: 'C:\Program Files\Git\bin\bash.exe'
 
 # ── filesystem ──────────────────────────────────────────────────────────────
 
@@ -182,14 +222,18 @@
 
 # The skill REGISTRY lives in the host composition and is layered per scope:
 # these rows register into THIS preset's layer of it, so they need no realm.
-# `skill-filesystem` contributes local-root discovery for agents on this preset, and
-# `tool-skill` gives them the catalog and loader; the merged catalog also
-# carries whatever the deployment registered globally (repository plugins).
+# `skill-filesystem` contributes local-root discovery for agents on this
+# preset. The full skill CATALOG injection (`dsh-tool-skill`, the ~9KB
+# `<available_skills>` reminder) is REMOVED (local addition): it perturbs the
+# trajectory (issue #6: 0/9 anchored with the catalog present vs ~81%
+# without). Instead `skill-search` exposes two small on-demand tools —
+# skill_search (list matching summaries) and skill_load (inject one skill's
+# full instructions) — the tool-search pattern.
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
 
-- id: tool-skill
-  name: '@deepseek-ai/dsh-tool-skill'
+- id: skill-search
+  name: ./skill-search.mjs
 
 # ── goals ───────────────────────────────────────────────────────────────────
 

@@ -50,6 +50,11 @@
       background: rgba(248,113,113,.12); border: 1px solid rgba(248,113,113,.4);
       border-radius: 5px; padding: 8px 10px; margin: 6px 0;
     }
+    .info {
+      color: #fbbf24; font-size: 12px; line-height: 1.5;
+      background: rgba(251,191,36,.1); border: 1px solid rgba(251,191,36,.35);
+      border-radius: 5px; padding: 8px 10px; margin: 6px 0;
+    }
     select {
       width: 100%; background: var(--card); color: var(--fg); border: 1px solid var(--border);
       border-radius: 5px; padding: 7px 8px; font-size: 12px; margin: 4px 0;
@@ -72,13 +77,16 @@
   <div class="main">
     <h3>官方模式（子 Agent 跟随主模型）</h3>
     <div id="presets"><div class="item">加载中…</div></div>
-    <h3>自定义子模型</h3>
+    <div id="experiment-note" style="display:none" class="info"></div>
+    <h3>省钱模式</h3>
     <div id="fc-toggle"></div>
     <div id="fc-body" style="display:none">
       <div class="current" id="cur-model"></div>
       <select id="model-select"></select>
+      <div class="warn" id="wf-warn">⚠ 省钱模式不覆盖 Workflow/Ralph worker。Workflow 未显式指定模型时、以及当前内置 Ralph，默认继承主 Agent 路由，可能按主模型计费。</div>
       <div class="warn">⚠ 应用更改将重启后端，当前正在运行的任务会被中断，请确认没有正在执行的任务。</div>
     </div>
+    <div id="catalog-error" style="display:none" class="warn"></div>
     <div class="note">更改在点击「应用」后才会生效；直接关闭窗口则不保存任何修改。</div>
   </div>
   <div id="status"></div>
@@ -94,20 +102,30 @@
     const $cur = document.getElementById('cur-model')
     const $status = document.getElementById('status')
     const $apply = document.getElementById('btn-apply')
+    const $expNote = document.getElementById('experiment-note')
+    const $catErr = document.getElementById('catalog-error')
 
-    let state = { groups: [], presets: [], currentModel: null }
-    let draft = { enableFc: false, modelId: null, presetId: 'standard' }
-    const FC = 'fc-child'
+    let state = { groups: [], groupsError: null, presets: [], economyRoute: null, defaultPreset: null, basePreset: null, experiment: 'off' }
+    let draft = { enableEconomy: false, presetId: 'standard', pair: { providerId: null, modelId: null } }
+    const ECONOMY = 'economy'
+    const EXP_LABEL = { anchored: '锚定', router: '路由' }
 
     function setStatus(text, cls) { $status.textContent = text; $status.className = cls || '' }
+
+    // The current BASE preset: the engine default when no experiment overlay
+    // is active, else the recorded fallback (what takes effect when the
+    // overlay turns off).
+    function currentBase() {
+      return state.experiment === 'off' ? (state.defaultPreset || 'standard') : (state.basePreset || 'standard')
+    }
 
     function renderPresets() {
       $presets.innerHTML = ''
       for (const p of state.presets) {
-        if (p.id === FC) continue
-        const isDefault = p.isDefault
+        if (p.id === ECONOMY) continue // economy has its own toggle section
+        const isDefault = currentBase() === p.id
         const row = document.createElement('div')
-        row.className = 'item' + (p.id === draft.presetId && !draft.enableFc ? ' picked' : '')
+        row.className = 'item' + (p.id === draft.presetId && !draft.enableEconomy ? ' picked' : '')
         const grow = document.createElement('div')
         grow.className = 'grow'
         grow.innerHTML = `<b>${p.name || p.id}</b>${isDefault ? ' <span class="tag">当前</span>' : ''}` + (p.description ? `<div class="desc">${p.description}</div>` : '')
@@ -148,7 +166,7 @@
           row.appendChild(btnDel)
         }
         row.onclick = () => {
-          draft.enableFc = false
+          draft.enableEconomy = false
           draft.presetId = p.id
           renderAll()
         }
@@ -158,93 +176,115 @@
 
     function renderFcToggle() {
       $fc.innerHTML = ''
-      const fcRow = state.presets.find((p) => p.id === FC)
-      const isFcNow = !!fcRow && fcRow.isDefault
+      const isEconomyNow = currentBase() === ECONOMY
       const row = document.createElement('div')
-      row.className = 'item' + (draft.enableFc ? ' picked' : '')
+      row.className = 'item' + (draft.enableEconomy ? ' picked' : '')
       const grow = document.createElement('div')
       grow.className = 'grow'
-      grow.innerHTML = `<b>自定义子模型</b>${isFcNow ? ' <span class="tag">当前</span>' : ''}`
-        + '<div class="desc">与官方「标准模式」完全相同，仅子 Agent 默认使用的模型可由你自选；其余工具、能力与行为均与标准模式一致。</div>'
+      grow.innerHTML = `<b>省钱模式</b>${isEconomyNow ? ' <span class="tag">当前</span>' : ''}`
+        + '<div class="desc">基于官方「标准模式」，仅子 Agent 默认使用的模型（服务商 + 型号）可由你自选，默认 deepseek-v4-flash；其余工具、能力与行为均与官方标准模式一致。</div>'
       row.appendChild(grow)
       const tg = document.createElement('div')
-      tg.className = 'toggle' + (draft.enableFc ? ' on' : '')
-      tg.title = draft.enableFc ? '关闭' : '启用'
+      tg.className = 'toggle' + (draft.enableEconomy ? ' on' : '')
+      tg.title = draft.enableEconomy ? '关闭' : '启用'
       tg.innerHTML = '<div class="knob"></div>'
       tg.onclick = (ev) => {
         ev.stopPropagation()
-        draft.enableFc = !draft.enableFc
+        draft.enableEconomy = !draft.enableEconomy
+        if (draft.enableEconomy && !draft.pair.providerId) {
+          draft.pair = state.economyRoute || firstChatPair()
+        }
         renderAll()
       }
       row.appendChild(tg)
       $fc.appendChild(row)
     }
 
+    function firstChatPair() {
+      for (const g of state.groups) {
+        const m = g.models.find((m) => m.chat)
+        if (m) return { providerId: g.providerId, modelId: m.id }
+      }
+      return null
+    }
+
     function renderModels() {
-      $fcBody.style.display = draft.enableFc ? '' : 'none'
-      $apply.textContent = draft.enableFc ? '应用（启用自定义子模型）' : '应用（设为默认）'
-      if (!draft.enableFc) return
-      $cur.innerHTML = state.currentModel
-        ? `当前生效：<b>${state.currentModel}</b>（新对话的子 Agent 使用该模型）`
+      $fcBody.style.display = draft.enableEconomy ? '' : 'none'
+      $apply.textContent = draft.enableEconomy ? '应用（启用省钱模式）' : '应用（设为默认）'
+      if (!draft.enableEconomy) return
+      $cur.innerHTML = state.economyRoute
+        ? `当前生效：<b>${state.economyRoute.providerId}/${state.economyRoute.modelId}</b>（新对话的子 Agent 使用该模型）`
         : '尚未指定模型（将使用默认模型）'
       $select.innerHTML = ''
       for (const g of state.groups) {
         const og = document.createElement('optgroup')
-        og.label = g.provider
+        og.label = `${g.provider}（${g.providerId}）`
         for (const m of g.models) {
           const opt = document.createElement('option')
-          opt.value = m.id
+          opt.value = `${g.providerId}/${m.id}`
           opt.textContent = m.chat ? m.id : `${m.id}（非文本模型，不可用）`
           opt.disabled = !m.chat
           og.appendChild(opt)
         }
         $select.appendChild(og)
       }
-      const want = draft.modelId || state.currentModel
-      const chatIds = state.groups.flatMap((g) => g.models.filter((m) => m.chat).map((m) => m.id))
-      $select.value = chatIds.includes(want) ? want : (chatIds[0] || '')
+      const want = draft.pair ? `${draft.pair.providerId}/${draft.pair.modelId}` : null
+      const chatValues = state.groups.flatMap((g) => g.models.filter((m) => m.chat).map((m) => `${g.providerId}/${m.id}`))
+      $select.value = want && chatValues.includes(want) ? want : (chatValues[0] || '')
     }
 
     function isDirty() {
-      const fcNow = state.presets.some((p) => p.isDefault && p.id === FC)
-      if (draft.enableFc !== fcNow) return true
-      if (draft.enableFc) {
-        return (draft.modelId || $select.value) !== state.currentModel
+      const economyNow = currentBase() === ECONOMY
+      if (draft.enableEconomy !== economyNow) return true
+      if (draft.enableEconomy) {
+        const sel = parseSelect()
+        const cur = state.economyRoute
+        if (!sel) return false
+        return !cur || sel.providerId !== cur.providerId || sel.modelId !== cur.modelId
       }
-      const defNow = state.presets.find((p) => p.isDefault)
-      return draft.presetId !== (defNow ? defNow.id : 'standard')
+      return draft.presetId !== currentBase()
+    }
+
+    function parseSelect() {
+      const v = $select.value
+      const i = v.indexOf('/')
+      if (i <= 0 || i === v.length - 1) return null
+      return { providerId: v.slice(0, i), modelId: v.slice(i + 1) }
     }
 
     function renderAll() {
       renderPresets()
       renderFcToggle()
       renderModels()
-      const dirty = isDirty()
+      $expNote.style.display = state.experiment !== 'off' ? '' : 'none'
+      if (state.experiment !== 'off') {
+        $expNote.textContent = `实验开关「${EXP_LABEL[state.experiment] || state.experiment}」开启中：新对话使用第三方实验预设。此处的选择是实验关闭后的回落模式。`
+      }
+      $catErr.style.display = state.groupsError ? '' : 'none'
+      if (state.groupsError) $catErr.textContent = '⚠ ' + state.groupsError + '（已保存的模型不受影响）'
+      // A transient catalog failure must not let the user commit a blind pair.
+      const catBlocked = !!(state.groupsError && draft.enableEconomy)
+      const dirty = !catBlocked && isDirty()
       $apply.disabled = !dirty
       $apply.style.opacity = dirty ? '' : '.45'
       $apply.style.cursor = dirty ? 'pointer' : 'default'
-      $apply.title = dirty ? '应用更改' : '没有需要应用的修改'
+      $apply.title = catBlocked ? '模型目录暂不可用，无法应用' : (dirty ? '应用更改' : '没有需要应用的修改')
     }
 
     async function refresh() {
       try {
         state = await window.dshShell.getData()
-        const fcNow = state.presets.some((p) => p.isDefault && p.id === FC)
-        const defNow = state.presets.find((p) => p.isDefault)
-        draft.enableFc = fcNow
-        draft.presetId = fcNow ? 'standard' : (defNow ? defNow.id : 'standard')
-        draft.modelId = state.currentModel
-        if (!state.selectedModel && state.currentModel) state.selectedModel = state.currentModel
-        if (!state.selectedModel && state.groups.length > 0) {
-          state.selectedModel = (state.groups[0].models.find((m) => m.chat) || state.groups[0].models[0])?.id
-        }
+        const economyNow = currentBase() === ECONOMY
+        draft.enableEconomy = economyNow
+        draft.presetId = economyNow ? 'standard' : currentBase()
+        draft.pair = state.economyRoute || firstChatPair()
         renderAll()
       } catch (e) {
         setStatus('✗ 数据加载失败：' + e, 'err')
       }
     }
 
-    $select.onchange = () => { draft.modelId = $select.value }
+    $select.onchange = () => { draft.pair = parseSelect() || draft.pair }
 
     document.getElementById('btn-close').onclick = () => window.dshShell.close()
     document.getElementById('btn-apply').onclick = async () => {
@@ -252,11 +292,16 @@
       setStatus('等待确认…')
       try {
         const r = await window.dshShell.apply(
-          draft.enableFc
-            ? { enableFc: true, modelId: draft.modelId || $select.value }
-            : { enableFc: false, presetId: draft.presetId },
+          draft.enableEconomy
+            ? { enableEconomy: true, providerId: (draft.pair || {}).providerId, modelId: (draft.pair || {}).modelId }
+            : { enableEconomy: false, presetId: draft.presetId },
         )
         if (r && r.canceled) { setStatus('已取消'); return }
+        if (r && r.pending) {
+          setStatus('✓ 已记录：实验开关开启中，此选择在关闭实验开关后生效', 'ok')
+          await refresh()
+          return
+        }
         // Goal accomplished — close the dialog.
         window.dshShell.close()
       } catch (e) { setStatus('✗ 应用失败：' + e, 'err') }

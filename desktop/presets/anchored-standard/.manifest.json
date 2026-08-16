@@ -1,0 +1,20 @@
+{
+  "upstream": "https://github.com/xiaobright/dsh-anchored-standard.git",
+  "commit": "0a38616c1b7ce4219b6d94d95c89f34a90741616",
+  "note": "第三方实验预设，逐字搬运（效果与故障归上游）。安装时仅替换 agent.cordis.yml 的 bashPath 为本机 Git Bash 包装器路径（透明适配，见 component-defs）。",
+  "adaptedFields": [
+    "agent.cordis.yml:bashPath"
+  ],
+  "files": {
+    "agent.cordis.yml": "764f72dde894cd22c75ab6d497189cdf266a46c897cb528e1151fded574c43f8",
+    "preset.yml": "4c11b065bc9ae7f2fc8fb80f3163bae884ca308d8c8f27f1b7c5549dd0cb7549",
+    "tool-bootstrap.mjs": "a0df69feb0c03a9cb694935045f6296b010c6a70ba69dfa84229493686bfdce0",
+    "compaction-epoch.mjs": "a235a9904fc7435a5e61830d0624628d06121049a7549813a8f13017ddca0770",
+    "custom-bash.mjs": "76acbed05588b7fb3db57bc16c626b49265278af74cd0224bd873c09a83b7ad6",
+    "dev-tool-search.mjs": "29d2fb7ee6be57e0aca58eb205939f0b463e4e2631ee55192c95ef6af6bb76d9",
+    "instruction-hint.mjs": "cdeae53df5e74cf85e119344317e8cf69cb017319b5c9aedff2295759b740664",
+    "skill-search.mjs": "3276149046fd610ca7a3c06dab522354856d74215af16e8395b0176f222c13d7",
+    "LICENSE": "f378a902991032962a07bcabdf8bc6b4dad65b3a1fd06ed66cc2d61faaf3a32e",
+    "NOTICE": "c77836e814bcdd239569a1a82d24196f3a0144ca703545bccf692a0de10bbaab"
+  }
+}

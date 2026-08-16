@@ -1,0 +1,14 @@
+{
+  "upstream": "https://github.com/liceses/dsh-gitbash-preset.git",
+  "commit": "fc475f4836ed9ea45b5c624878fdc3acf9e598c6",
+  "note": "第三方预设，逐字搬运（效果与故障归上游）。安装时仅替换 agent.cordis.yml 的 shellPath 为本机 Git Bash 路径（透明适配，见 component-defs）。",
+  "adaptedFields": [
+    "agent.cordis.yml:shellPath"
+  ],
+  "files": {
+    "agent.cordis.yml": "647c5d1d66c163bc05bf11c561a66fe31e8ad08bbbb30789ede90fb6e860a104",
+    "gitbash-executor.mjs": "9dc15942669d531d8f2c8a7500148ea2e1b07a00ea52837e13fe388fbb2c2f18",
+    "preset.yml": "d63e6aaba798b348aec4556ba75170244476db46f7a0f3efe5a0620f086c6e27",
+    "LICENSE": "593bda16819b830f9a1a08b4e3d1cd0a5f5b93e439390544fcb1c0bc9640eec9"
+  }
+}

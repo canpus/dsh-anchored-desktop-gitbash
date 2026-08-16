@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>component-update</title>
+  <style>
+    :root {
+      --bg: #0f172a; --fg: #e2e8f0; --card: #1e293b; --border: rgba(255,255,255,.14);
+      --muted: rgba(226,232,240,.65); --accent: #4d6bfe; --accent-bg: #223057;
+    }
+    body.light {
+      --bg: #f8fafc; --fg: #0f172a; --card: #ffffff; --border: rgba(15,23,42,.12);
+      --muted: rgba(15,23,42,.6); --accent: #4d6bfe; --accent-bg: #e4eaff;
+    }
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    body {
+      background: var(--bg); color: var(--fg);
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      font-size: 13px; display: flex; flex-direction: column; user-select: none;
+    }
+    header { padding: 10px 12px 6px; font-weight: 600; }
+    .main { flex: 1; display: flex; flex-direction: column; overflow-y: auto; padding: 0 12px; }
+    .note { font-size: 11px; opacity: .75; line-height: 1.5; margin: 6px 0; }
+    .warn {
+      color: #f87171; font-size: 12px; line-height: 1.5;
+      background: rgba(248,113,113,.12); border: 1px solid rgba(248,113,113,.4);
+      border-radius: 5px; padding: 8px 10px; margin: 6px 0;
+    }
+    .info {
+      color: #fbbf24; font-size: 12px; line-height: 1.5;
+      background: rgba(251,191,36,.1); border: 1px solid rgba(251,191,36,.35);
+      border-radius: 5px; padding: 8px 10px; margin: 6px 0;
+    }
+    .item {
+      background: var(--card); border: 1px solid var(--border); border-radius: 5px;
+      padding: 8px 10px; margin-bottom: 8px; font-size: 12px;
+    }
+    .item .head { display: flex; align-items: center; gap: 8px; }
+    .item .head b { flex: 1; min-width: 0; }
+    .item .commit { font-size: 11px; opacity: .8; margin-top: 4px; font-family: Consolas, monospace; }
+    .item .status { font-size: 11px; margin-top: 4px; min-height: 14px; }
+    .item .status.ok { color: #4ade80; }
+    .item .status.err { color: #f87171; }
+    .item .status.work { color: #fbbf24; }
+    .mini {
+      background: transparent; border: 1px solid var(--border); color: var(--fg);
+      border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer; flex-shrink: 0;
+    }
+    .mini:hover { background: var(--accent-bg); }
+    .mini.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .mini:disabled { opacity: .4; cursor: default; }
+    #status { padding: 6px 12px; font-size: 12px; min-height: 16px; }
+    #status.ok { color: #4ade80; }
+    #status.err { color: #f87171; }
+    .btn-row { display: flex; justify-content: flex-end; padding: 4px 12px 10px; gap: 8px; }
+    .btn {
+      background: var(--accent); border: none; color: #fff; border-radius: 5px;
+      padding: 6px 14px; font-size: 12px; cursor: pointer;
+    }
+    .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--fg); }
+  </style>
+</head>
+<body>
+  <header>上游组件更新</header>
+  <div class="main">
+    <div class="note">更新 = 从上游 GitHub 拉取最新快照并安装（仅限白名单仓库，更新内容即上游代码，与手动安装同信任边界；效果与故障归上游）。更新后新对话生效，非空旧对话不受影响。失败自动保持旧版，可随时回退到上一版。</div>
+    <div id="git-warn" style="display:none" class="warn">未找到 git.exe（Git for Windows）——组件更新需要 Git，请安装后重试。</div>
+    <div id="list"><div class="item">加载中…</div></div>
+  </div>
+  <div id="status"></div>
+  <div class="btn-row">
+    <button class="btn ghost" id="btn-close">关闭</button>
+  </div>
+  <script>
+    const $list = document.getElementById('list')
+    const $status = document.getElementById('status')
+    const $gitWarn = document.getElementById('git-warn')
+    const short = (c) => (c ? c.slice(0, 8) : '—')
+    const fmt = (t) => (t ? new Date(t).toLocaleString('zh-CN', { hour12: false }) : '—')
+
+    function setStatus(text, cls) { $status.textContent = text; $status.className = cls || '' }
+
+    function renderRow(c) {
+      const item = document.createElement('div')
+      item.className = 'item'
+      const head = document.createElement('div')
+      head.className = 'head'
+      const name = document.createElement('b')
+      name.textContent = c.label || c.id
+      head.appendChild(name)
+      const btnUpdate = document.createElement('button')
+      btnUpdate.className = 'mini primary'
+      btnUpdate.textContent = c.hasUpdate ? '更新到最新' : '更新'
+      btnUpdate.disabled = c.busy
+      btnUpdate.onclick = () => runAction('do', c.id, btnUpdate)
+      head.appendChild(btnUpdate)
+      const btnRevert = document.createElement('button')
+      btnRevert.className = 'mini'
+      btnRevert.textContent = '回退上一版'
+      btnRevert.disabled = !c.canRevert || c.busy
+      btnRevert.onclick = () => runAction('revert', c.id, btnRevert)
+      head.appendChild(btnRevert)
+      item.appendChild(head)
+      const commit = document.createElement('div')
+      commit.className = 'commit'
+      commit.textContent = `当前 ${short(c.currentCommit)}（${fmt(c.installedAt)}） ｜ 远端 ${c.remoteCommit ? short(c.remoteCommit) : (c.remoteError ? '检查失败' : '…')}`
+      item.appendChild(commit)
+      const status = document.createElement('div')
+      status.className = 'status'
+      status.id = `st-${c.id}`
+      if (c.hasUpdate) { status.textContent = '有可用更新'; status.className = 'status ok' }
+      else if (c.currentCommit) { status.textContent = '已是最新'; status.className = 'status ok' }
+      else if (c.error) { status.textContent = c.error; status.className = 'status err' }
+      else { status.textContent = '未安装（使用包内基线）' }
+      item.appendChild(status)
+      return item
+    }
+
+    async function refresh() {
+      try {
+        const r = await window.dshShell.list()
+        $gitWarn.style.display = r.gitAvailable ? 'none' : ''
+        $list.innerHTML = ''
+        for (const c of r.components || []) $list.appendChild(renderRow(c))
+      } catch (e) {
+        $list.innerHTML = `<div class="item">列表加载失败：${String(e && e.message || e)}</div>`
+      }
+    }
+
+    async function runAction(kind, id, btn) {
+      btn.disabled = true
+      setStatus(kind === 'do' ? `正在更新 ${id}（下载 → 校验 → 安装 → 挂载验证）…` : `正在回退 ${id}…`, 'ok')
+      try {
+        const r = await window.dshShell[kind](id)
+        setStatus(kind === 'do'
+          ? (r.alreadyUpToDate ? `${id} 已是最新` : `${id} 已更新到 ${short(r.commit)}${r.suiteCommit ? '（suite ' + short(r.suiteCommit) + '）' : ''}，挂载验证${r.mounted ? '通过' : '未执行'}`)
+          : `${id} 已回退到 ${short(r.commit)}，挂载验证${r.mounted ? '通过' : '未执行'}`, 'ok')
+      } catch (e) {
+        setStatus(`✗ ${String(e && e.message || e)}`, 'err')
+      }
+      await refresh()
+    }
+
+    document.getElementById('btn-close').onclick = () => window.dshShell.close()
+
+    try {
+      window.dshShell.onTheme((t) => { document.body.classList.toggle('light', t === 'light') })
+    } catch (e) { /* preload missing */ }
+
+    ;(async () => { await refresh() })()
+  </script>
+</body>
+</html>

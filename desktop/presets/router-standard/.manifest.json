@@ -1,0 +1,16 @@
+{
+  "upstream": "https://github.com/yjh051108/dsh-routing-suite.git",
+  "suiteCommit": "a09eb0ade28e6ec3b8e5eb22985a14f6bfa1fbe5",
+  "presetCommit": "eff787e95132d6c7104214542104a84d656b497e",
+  "note": "第三方实验预设，逐字搬运（效果与故障归上游）。遵守套件锁定：以 suite 主分支锁定的 preset 子模块为准，不追子模块远端更新。",
+  "adaptedFields": [],
+  "files": {
+    "agent.cordis.yml": "79efd9a67420f39ffc51c46937979c153191f771621eedc09aeae64628ed6b8e",
+    "preset.yml": "43497e4cc1fcf9c4840b157b34773ea3774553839c72a6339e4a4ca758dbee39",
+    "router-bootstrap-v1.mjs": "82e8b106d4abe2df407506c9356d1dcdb3c0095afd9e86ac82aecb0f1a7f49f1",
+    "router-bootstrap.mjs": "82e8b106d4abe2df407506c9356d1dcdb3c0095afd9e86ac82aecb0f1a7f49f1",
+    "router-core.mjs": "90764715c80d670dd872c1b033d29c556206136be72eb9bdc67f9b9b75eda60e",
+    "LICENSE": "edac25b2180ebb57ea0430db3f91dbb4741dd208aa467da766d02b7088bf0a32",
+    "NOTICE": "205a77352c881f3c4e643169fd45555c114cd18f1f12d7ef842546b04cb5ec7b"
+  }
+}

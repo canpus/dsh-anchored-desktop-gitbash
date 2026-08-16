@@ -26,8 +26,7 @@
   "watch": {
     "self": {
       "repo": "https://github.com/canpus/dsh-anchored-desktop-gitbash.git",
-      "note": "本应用（桌面壳）",
-      "pauseNote": "暂时终版，暂停更新"
+      "note": "本应用（桌面壳）"
     },
     "harness": {
       "npm": "@deepseek-ai/dsh",
@@ -37,8 +36,14 @@
     "anchored": {
       "repo": "https://github.com/xiaobright/dsh-anchored-standard.git",
       "branch": "main",
-      "lockedCommit": "6472c1c",
-      "note": "思维链锚定模板"
+      "lockedCommit": "0a38616c1b7c",
+      "note": "思维链锚定模板（实验开关·搬运）"
+    },
+    "router": {
+      "repo": "https://github.com/yjh051108/dsh-routing-suite.git",
+      "branch": "main",
+      "lockedCommit": "a09eb0ade28e",
+      "note": "任务感知路由（实验开关·搬运，遵守套件子模块锁定）"
     },
     "gitbash": {
       "repo": "https://github.com/liceses/dsh-gitbash-preset.git",

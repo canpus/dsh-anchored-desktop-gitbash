@@ -1,4 +1,4 @@
-// Stage 3 updater (0.4.0-slim) — four-way update check:
+// Stage 3 updater (0.4.2) — five-way update check:
 //   self     — shell release tags (git ls-remote); actionable via 整包自更新.
 //   harness  — the official backend now ships as the bundled npm package under
 //              desktop/vendor; check the npm registry for a newer
@@ -6,7 +6,9 @@
 //              inside the green package, so downloading a new green zip IS the
 //              upgrade (the 0.3.9 in-place git rebuild flow is gone with the
 //              source-checkout engine).
-//   anchored / gitbash — preset template repos (git ls-remote, repo-side).
+//   anchored / router / gitbash — preset template repos (git ls-remote,
+//              repo-side). anchored+router are the 实验开关搬运 presets;
+//              gitbash is the legacy Windows minimal variant.
 //
 // Pure Node module (no electron imports) so it is testable from the CLI:
 //   node desktop/updater.js check
@@ -163,6 +165,7 @@ async function checkForUpdate({ onResult, onStep } = {}) {
     ['self', () => checkSelf(watch.self)],
     ['harness', () => checkHarness(watch.harness)],
     ['anchored', () => checkUpstream(watch.anchored, 'anchored')],
+    ['router', () => checkUpstream(watch.router, 'router')],
     ['gitbash', () => checkUpstream(watch.gitbash, 'gitbash')],
   ]
   for (const [key, fn] of checks) {

@@ -30,6 +30,10 @@
     }
     button:hover { background: rgba(255,255,255,.15); }
     button:active { background: rgba(255,255,255,.25); }
+    /* Experiment toggles: .on = the overlay is the current effective preset. */
+    button.on { background: #4d6bfe; border-color: #4d6bfe; color: #ffffff; }
+    button.on:hover { background: #5b77ff; }
+    button.on:active { background: #3d5bee; }
   </style>
 </head>
 <body>
@@ -39,6 +43,8 @@
       <button id="btn-font-minus" title="缩小字体（Ctrl+-）">A−</button>
       <button id="btn-font-plus" title="放大字体（Ctrl+=）">A+</button>
       <button id="btn-subagent">模式切换</button>
+      <button id="btn-anchor" title="实验开关：思维链锚定（第三方预设，按上游原样提供，效果不保证；需本机装有 Git for Windows）">锚定</button>
+      <button id="btn-router" title="实验开关：任务感知路由（第三方预设，按上游原样提供，效果不保证）">路由</button>
       <button id="btn-pdf">导出对话</button>
       <button id="btn-proxy">代理设置</button>
       <button id="btn-update">检查更新</button>
@@ -56,16 +62,34 @@
     document.getElementById('btn-proxy').addEventListener('click', () => send('proxy'))
     document.getElementById('btn-update').addEventListener('click', () => send('check-update'))
     document.getElementById('btn-restart').addEventListener('click', () => send('restart'))
+    const togglePreset = (experiment) => {
+      try { window.dshShell && window.dshShell.togglePreset(experiment).catch(() => {}) } catch (e) { /* preload missing */ }
+    }
+    document.getElementById('btn-anchor').addEventListener('click', () => togglePreset('anchored'))
+    document.getElementById('btn-router').addEventListener('click', () => togglePreset('router'))
+
+    let themeDark = true
+    function paintButtons() {
+      document.querySelectorAll('button').forEach((b) => {
+        const on = b.classList.contains('on')
+        b.style.color = on ? '#ffffff' : (themeDark ? '#e2e8f0' : '#0f172a')
+        b.style.borderColor = on ? '#4d6bfe' : (themeDark ? 'rgba(255,255,255,.25)' : 'rgba(15,23,42,.2)')
+        b.style.background = on ? '#4d6bfe' : 'transparent'
+      })
+    }
+    function onPresetState(s) {
+      document.getElementById('btn-anchor').classList.toggle('on', s.experiment === 'anchored')
+      document.getElementById('btn-router').classList.toggle('on', s.experiment === 'router')
+      paintButtons()
+    }
     try {
       window.dshShell.onTheme((t) => {
-        const dark = t !== 'light'
-        document.body.style.background = dark ? '#1e293b' : '#f1f5f9'
-        document.body.style.color = dark ? '#e2e8f0' : '#0f172a'
-        document.querySelectorAll('button').forEach((b) => {
-          b.style.color = dark ? '#e2e8f0' : '#0f172a'
-          b.style.borderColor = dark ? 'rgba(255,255,255,.25)' : 'rgba(15,23,42,.2)'
-        })
+        themeDark = t !== 'light'
+        document.body.style.background = themeDark ? '#1e293b' : '#f1f5f9'
+        document.body.style.color = themeDark ? '#e2e8f0' : '#0f172a'
+        paintButtons()
       })
+      window.dshShell.onPresetState(onPresetState)
     } catch (e) { /* preload missing */ }
   </script>
 </body>
