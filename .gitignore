@@ -5,6 +5,7 @@ third-party/
 # ---- 构建与打包产物 ----
 dist/
 desktop/node_modules/
+desktop/vendor/
 node.exe
 desktop/node.exe
 

@@ -32,15 +32,24 @@ const gitbashDir = () => path.join(presetsRoot(), 'minimal-gitbash')
 // rows are indented 8 spaces; `\s+` matches any indentation so minor upstream
 // re-indentation does not break generation.
 function injectChildModel(src, modelId) {
-  return src
+  // The template may carry CRLF line endings (git autocrlf on Windows); match
+  // any EOL and re-use it for the injected lines. Fail loud when a row stops
+  // matching — a silent no-op would generate a preset without the child model.
+  const eol = src.includes('\r\n') ? '\r\n' : '\n'
+  let hits = 0
+  const out = src
     .replace(
-      /(provider: spawn\n\s+toolName: subagent\n\s+backgroundMode: continuable\n)/,
-      `$1        agentOptions:\n          model: ${modelId}\n`,
+      /(provider: spawn\r?\n\s+toolName: subagent\r?\n\s+backgroundMode: continuable\r?\n)/,
+      (m) => { hits += 1; return `${m}        agentOptions:${eol}          model: ${modelId}${eol}` },
     )
     .replace(
-      /(provider: fork\n\s+toolName: subagent_fork\n\s+backgroundMode: continuable\n)/,
-      `$1        agentOptions:\n          model: ${modelId}\n`,
+      /(provider: fork\r?\n\s+toolName: subagent_fork\r?\n\s+backgroundMode: continuable\r?\n)/,
+      (m) => { hits += 1; return `${m}        agentOptions:${eol}          model: ${modelId}${eol}` },
     )
+  if (hits !== 2 || !out.includes(`model: ${modelId}`)) {
+    throw new Error('injectChildModel: failed to inject agentOptions.model into the spawn/fork rows')
+  }
+  return out
 }
 
 // Generate the ONE dynamic user preset `fc-child` (display name「自定义子模型」)

@@ -148,7 +148,12 @@ export function sessionMode(session) {
 
 export function extractText(data) {
   if (!data) return ''
-  const content = Array.isArray(data.content) ? data.content : []
+  // Defensive unwrap: plugin/tool-generated user/message payloads are
+  // occasionally shaped as `data.message` (e.g. an injector startIngest
+  // seed); reading data.content directly yields '' → build/fix tasks are
+  // misclassified as weak (router-standard issue #1).
+  const payload = data && typeof data.message === 'object' && data.message !== null ? data.message : data
+  const content = Array.isArray(payload.content) ? payload.content : []
   return content.map((c) => (typeof c === 'string' ? c : (c.text ?? ''))).join(' ')
 }
 

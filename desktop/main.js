@@ -924,7 +924,7 @@ ipcMain.handle('model-dialog:open-document', async (_e, { agentPreset, trust }) 
   // Official RPC agentPreset.openDocument rejects system presets ("cannot be
   // written: it ships with the deployment") — open the file locally instead.
   const p = trust === 'system'
-    ? path.join(REPO, 'apps', 'cli', 'config', 'agent-presets', agentPreset, 'agent.cordis.yml')
+    ? path.join(REPO, 'node_modules', '@deepseek-ai', 'dsh', 'config', 'agent-presets', agentPreset, 'agent.cordis.yml')
     : path.join(os.homedir(), '.dsh', '.agent-presets', agentPreset, 'agent.cordis.yml')
   if (!fs.existsSync(p)) throw new Error(`文件不存在：${p}`)
   await electronShell.openPath(p)
@@ -1522,28 +1522,6 @@ try {
   updater = null
 }
 
-let upgrading = false
-let progressWin = null
-
-function openProgressWindow() {
-  progressWin = new BrowserWindow({
-    width: 640,
-    height: 360,
-    frame: false,
-    resizable: false,
-    alwaysOnTop: true,
-    backgroundColor: '#0f172a',
-    parent: win || undefined,
-    webPreferences: { preload: path.join(__dirname, 'progress-preload.js'), contextIsolation: true },
-  })
-  progressWin.loadFile(path.join(__dirname, 'progress.html'))
-  progressWin.on('closed', () => { progressWin = null })
-}
-
-function closeProgressWindow() {
-  if (progressWin) { progressWin.destroy(); progressWin = null }
-}
-
 // ---- self-drawn dialog (replaces the ugly system message boxes) ----
 let shellDialogWin = null
 let shellDialogResolver = null
@@ -1598,7 +1576,6 @@ ipcMain.on('dialog-choose', (_e, index) => {
 })
 
 function checkUpdateInteractive() {
-  if (upgrading) return
   if (!updater) {
     showShellDialog({ title: '检查更新', message: '更新模块未加载。' })
     return
@@ -1615,43 +1592,16 @@ function checkUpdateInteractive() {
       })
       const official = (r.results || []).find((x) => x.name === 'harness')
       if (official && official.hasUpdate) {
-        const choice = await showShellDialog({
+        await showShellDialog({
           title: '检查更新',
-          message: `${lines.join('\n')}\n\n官方后端可升级：将拉取官方代码并重新构建（约 15-30 分钟），失败自动回滚。其余三路（本应用/锚定模板/GitBash 执行器）请在 Git 仓库侧跟进。`,
-          buttons: ['升级', '取消'],
+          message: `${lines.join('\n')}\n\n0.4.0 起官方后端随绿色版整包发布：下载新版绿色版即可完成升级（旧版不受影响）。其余三路（本应用/锚定模板/GitBash 执行器）请在 Git 仓库侧跟进。`,
+          buttons: ['知道了'],
         })
-        if (choice === 0) startUpgrade()
         return
       }
       await showShellDialog({ title: '检查更新', message: lines.join('\n') })
     },
   })
-}
-
-async function startUpgrade() {
-  upgrading = true
-  log('upgrade started')
-  openProgressWindow()
-  const result = await updater.runUpgrade({
-    onStep: (s) => { if (progressWin) progressWin.webContents.send('upgrade-step', s) },
-  })
-  closeProgressWindow()
-  upgrading = false
-  log('upgrade finished:', 'ok=' + Boolean(result.ok), result.ok ? 'target=' + String(result.target).slice(0, 8) : 'error=' + String(result.error))
-  if (result.ok) {
-    const choice = await showShellDialog({
-      title: '升级完成',
-      message: `升级成功（${result.target.slice(0, 8)}）。重启应用生效。`,
-      buttons: ['立即重启', '稍后'],
-    })
-    if (choice === 0) restart()
-  } else {
-    await showShellDialog({
-      title: '升级失败',
-      message: '升级失败，已自动回滚到原版本。\n详情报告见项目根目录 upgrade-report-*.md。',
-      danger: true,
-    })
-  }
 }
 
 // NOTE: startup silently checking for updates was removed on purpose —
@@ -1718,26 +1668,6 @@ function shutdown() {
   })()
 }
 
-// ---- green-package first-launch relink ----
-// The zip ships the pnpm virtual store without junctions (zip can't store them
-// portably); on first launch rebuild every dependency link recorded in
-// repo/link-manifest.json with the bundled node.exe. Dev checkouts without a
-// manifest skip this entirely.
-async function ensureLinked() {
-  const relinkScript = path.join(__dirname, 'relink.mjs')
-  const manifest = path.join(REPO, 'link-manifest.json')
-  const marker = path.join(REPO, 'node_modules', '.dsh-green-linked')
-  if (!fs.existsSync(relinkScript) || !fs.existsSync(manifest) || fs.existsSync(marker)) return
-  if (!fs.existsSync(path.join(REPO, 'node_modules', '.pnpm'))) return
-  log('first run: rebuilding dependency links (link-manifest.json)…')
-  const code = await new Promise((resolve) => {
-    const p = spawn(resolveNode(), [relinkScript], { cwd: __dirname, stdio: 'inherit', windowsHide: true })
-    p.on('exit', resolve)
-    p.on('error', () => resolve(-1))
-  })
-  log(`dependency relink finished (exit ${code})`)
-}
-
 // ---- first-run AGENTS baseline ----
 // New users get the portable AGENTS constitution so the injected-instruction
 // layer (and the "act-then-inject" safety chain) works out of the box. Only
@@ -1772,8 +1702,8 @@ async function main() {
   ipcMain.on('shell-action', (_event, action) => onShellAction(action))
 
   // Window + tray come up IMMEDIATELY with a local loading page: a slow
-  // backend boot (first-launch relink or a cold start) must never look like
-  // the app failed to launch. The real page is swapped in once ready.
+  // backend boot (a cold start) must never look like the app failed to
+  // launch. The real page is swapped in once ready.
   createWindow()
   createTray()
   applyTheme(currentTheme) // push the initial titlebar overlay color immediately
@@ -1787,7 +1717,6 @@ async function main() {
   })
   app.on('will-quit', () => globalShortcut.unregisterAll())
 
-  await ensureLinked()
   ensurePortableAgents()
   setLoadingStatus('正在启动后端…')
   startHarness()

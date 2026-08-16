@@ -1,9 +1,9 @@
 {
-  "_comment": "Shell interface config for the thin shell. startCommand pins --host/--port explicitly so upstream default-port changes cannot break the shell. Boot via apps/cli/lib/bin.js (official tsdown bundle) — NOT the tsx source path: on-the-fly TS transform costs 20-79s per launch vs 2.6-3.4s (D70, measured 2026-08-15). lib/ is git-ignored build output; pack-green.mjs asserts it before packing. Fields are auto-adapted by the updater (desktop/updater.js); do not hand-edit unless running a local experiment.",
-  "repoPath": "../repo",
+  "_comment": "Shell interface config for the thin shell (0.4.0-slim). startCommand pins --host/--port explicitly so upstream default-port changes cannot break the shell. The engine is the official npm package @deepseek-ai/dsh vendored under desktop/vendor (fetch via node desktop/fetch-vendor.cjs); the spawn cwd is the vendor dir, so the bin path is relative to it. Fields are auto-adapted by the updater (desktop/updater.js); do not hand-edit unless running a local experiment.",
+  "repoPath": "./vendor",
   "startCommand": [
     "node",
-    "apps/cli/lib/bin.js",
+    "node_modules/@deepseek-ai/dsh/lib/bin.js",
     "web",
     "--host",
     "127.0.0.1",
@@ -22,21 +22,16 @@
     "http": "",
     "https": ""
   },
-  "upstream": {
-    "remote": "origin",
-    "branch": "master",
-    "lockedCommit": "47f943859bef60e4160492346772ded9b24f765a"
-  },
   "watch": {
     "self": {
       "repo": "https://github.com/canpus/dsh-anchored-desktop-gitbash.git",
-      "note": "本应用（桌面壳）"
+      "note": "本应用（桌面壳）",
+      "pauseNote": "暂时终版，暂停更新"
     },
     "harness": {
-      "repo": "https://github.com/deepseek-ai/deepseek-harness.git",
-      "branch": "master",
-      "lockedCommit": "47f943859bef60e4160492346772ded9b24f765a",
-      "note": "官方后端（可升级目标）"
+      "npm": "@deepseek-ai/dsh",
+      "lockedVersion": "0.1.0-rc.6",
+      "note": "官方后端（npm 包，随绿色版整包更新）"
     },
     "anchored": {
       "repo": "https://github.com/xiaobright/dsh-anchored-standard.git",

@@ -1,25 +1,23 @@
-// Green-package builder — assemble dist/DeepSeek-Harness-v<ver>-green.zip:
-//   repo/    upstream runtime as the REAL tree only (pnpm virtual store + source;
-//            every junction/symlink is SKIPPED and recorded in
-//            repo/link-manifest.json — the zip cannot store junctions portably).
-//   desktop/ thin shell + bundled node.exe + relink.mjs (first-launch link
-//            rebuilder, runs with the bundled node, no admin rights needed:
-//            Windows junctions are unprivileged) + official electron dist.
+// Green-package builder (0.4.0-slim) — assemble dist/DeepSeek-Harness-v<ver>-green.zip:
+//   desktop/         thin shell + bundled node.exe + official electron dist
+//   desktop/vendor/  the official npm engine — @deepseek-ai/dsh production
+//                    install, plain real files (no junctions, no first-launch
+//                    relink). Fetch with `node desktop/fetch-vendor.cjs` before
+//                    packing; pack-green fails fast if it is missing.
 //
-// First-launch flow on the target machine: 启动.bat → electron main.js →
-// ensureLinked() runs relink.mjs → junction tree rebuilt from the manifest →
-// dsh web starts. Fully offline, no pnpm/corepack download required.
+// The 0.3.9 source-checkout engine (repo/ pnpm store + link-manifest +
+// relink.mjs) is gone: npm trees are junction-free, so the zip carries the
+// engine directly and first launch boots in seconds with no rebuild step.
 //
 // Packaging red lines (History_log 打包红线):
 //   - DeepSeek API.txt / MIMO API.txt / third-party / docs / History_log live at
 //     the PROJECT ROOT outside repo/ and desktop/ — never staged.
 //   - No fc-* presets or proxy values are pre-baked; .dsh is created on first run.
 //   - stage2-archive, dev test scripts and lock files are stripped from desktop/.
-// Usage: node desktop/pack-green.mjs   (pure Node, no deps; robocopy + node:zlib)
+// Usage: node desktop/pack-green.mjs [--stage-only]   (pure Node; robocopy + node:zlib)
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
-import fsp from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { writeZip, listZipNames } from './zip-write.mjs'
 
@@ -32,7 +30,8 @@ const ZIP = path.join(DIST, `DeepSeek-Harness-v${pkg.version}-green.zip`)
 
 const log = (...a) => console.log(`[pack ${(Date.now() / 1000).toFixed(1)}s]`, ...a)
 
-// robocopy exit codes 0-7 are success. Used only for junction-free trees.
+// robocopy exit codes 0-7 are success. Only used on junction-free trees
+// (desktop/ + the npm vendor install).
 function robocopy(src, dst, { excludeDirs = [] } = {}) {
   const args = [src, dst, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/NP']
   for (const d of excludeDirs) args.push('/XD', path.join(src, d))
@@ -46,85 +45,15 @@ function robocopy(src, dst, { excludeDirs = [] } = {}) {
 // System32 bsdtar stores non-ASCII names in the ANSI codepage with the UTF-8
 // flag unset — 用户指南.md extracts as mojibake everywhere (D68).
 
-// ---- real-tree copier + link manifest ----
-// Copies every REAL file/dir once (global realpath dedupe). Every junction or
-// symlink is skipped in the copy and recorded with a repo-relative target so
-// relink.mjs can recreate it on the target machine. Link detection is by
-// realpath identity (realpath(src) !== src) — independent of how the OS
-// classifies reparse points.
-const normKey = (p) => p.toLowerCase()
-const IGNORE_DIRS = new Set(['.git'])
-
-function copyRepoTree() {
-  const srcRoot = path.join(ROOT, 'repo')
-  const dst = path.join(STAGE, 'repo')
-  const stats = { files: 0, dirs: 0, links: 0, fileLinks: 0, outside: 0, broken: 0, errors: 0, lastLog: Date.now() }
-  const links = []
-
-  async function walk(realDir, outDir) {
-    const key = normKey(realDir)
-    await fsp.mkdir(outDir, { recursive: true })
-    const entries = await fsp.readdir(realDir, { withFileTypes: true })
-    for (const ent of entries) {
-      if (ent.isDirectory() && IGNORE_DIRS.has(ent.name)) continue
-      const srcP = path.join(realDir, ent.name)
-      const outP = path.join(outDir, ent.name)
-      let st
-      try { st = await fsp.lstat(srcP) } catch { stats.broken++; continue }
-      if (st.isFile() && !st.isSymbolicLink()) {
-        try {
-          await fsp.copyFile(srcP, outP)
-          stats.files++
-        } catch (e) { stats.errors++; if (stats.errors < 5) log(`  copy error: ${srcP}: ${e.message}`) }
-        continue
-      }
-      // Directories and links: identify by realpath identity.
-      let rp
-      try { rp = await fsp.realpath(srcP) } catch { stats.broken++; continue }
-      if (normKey(rp) !== normKey(srcP)) {
-        // It is a junction/symlink — record, don't materialize.
-        let tst = null
-        try { tst = await fsp.stat(rp) } catch { stats.broken++; continue }
-        const linkRel = path.relative(srcRoot, srcP).replace(/\\/g, '/')
-        const targetRel = path.relative(srcRoot, rp).replace(/\\/g, '/')
-        const kind = tst.isDirectory() ? 'dir' : 'file'
-        links.push({ link: linkRel, target: targetRel, kind })
-        if (kind === 'dir') stats.links++
-        else stats.fileLinks++
-        if (targetRel.startsWith('..')) stats.outside++
-        continue
-      }
-      // Real directory.
-      stats.dirs++
-      await walk(rp, outP)
-      if (stats.files % 20000 === 0 && Date.now() - stats.lastLog > 3000) {
-        stats.lastLog = Date.now()
-        log(`  copy progress: files=${stats.files} dirs=${stats.dirs} links=${stats.links} fileLinks=${stats.fileLinks} outside=${stats.outside} broken=${stats.broken}`)
-      }
-    }
-  }
-
-  log('stage repo/ (real tree only; junctions recorded to link-manifest.json)')
-  const started = Date.now()
-  return (async () => {
-    await walk(await fsp.realpath(srcRoot), dst)
-    const manifest = { version: 1, repoPath: 'repo', links }
-    fs.writeFileSync(path.join(dst, 'link-manifest.json'), JSON.stringify(manifest))
-    const secs = ((Date.now() - started) / 1000).toFixed(1)
-    log(`repo copy done in ${secs}s: files=${stats.files} dirs=${stats.dirs} links=${stats.links} fileLinks=${stats.fileLinks} outsideTargets=${stats.outside} broken=${stats.broken} copyErrors=${stats.errors}`)
-    if (stats.outside > 0) log(`WARNING: ${stats.outside} links point OUTSIDE repo — they will not relink on other machines`)
-  })()
-}
-
-// ---- build-artifact gate (D70) ----
-// The shell boots the harness from apps/cli/lib/bin.js (the official tsdown
-// bundle) — NOT the tsx source path, which costs 20-79s per launch (measured
-// 2026-08-15). lib/ is git-ignored build output: packing a tree without it
-// would ship a launcher that cannot start. Upgrade paths rebuild it
-// (build:lib); local packs must fail fast instead of shipping a dead zip.
-const CLI_LIB_BIN = path.join(ROOT, 'repo', 'apps', 'cli', 'lib', 'bin.js')
-if (!fs.existsSync(CLI_LIB_BIN)) {
-  log('FATAL: repo/apps/cli/lib/bin.js 缺失 — 先跑 build:lib（pnpm run build:lib）再打包')
+// ---- engine gate ----
+// The shell boots the harness from the vendored npm package (lib/bin.js is the
+// official build artifact shipped in the npm tarball — no local build step).
+// Packing without it would ship a launcher that cannot start.
+const VENDOR = path.join(__dirname, 'vendor')
+const VENDOR_BIN = path.join(VENDOR, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+const VENDOR_WEB = path.join(VENDOR, 'node_modules', '@deepseek-ai', 'dsh-web-frontend', 'dist', 'index.html')
+if (!fs.existsSync(VENDOR_BIN) || !fs.existsSync(VENDOR_WEB)) {
+  log('FATAL: desktop/vendor 缺失或不完整 — 先跑 node desktop/fetch-vendor.cjs 再打包')
   process.exit(1)
 }
 
@@ -133,26 +62,30 @@ log('clean staging dir')
 fs.rmSync(STAGE, { recursive: true, force: true })
 fs.mkdirSync(STAGE, { recursive: true })
 
-await copyRepoTree()
+log('stage desktop/ (exclude node_modules + vendor + stage2-archive)')
+robocopy(path.join(__dirname), path.join(STAGE, 'desktop'), { excludeDirs: ['node_modules', 'vendor', 'stage2-archive'] })
 
-log('stage desktop/ (exclude node_modules + stage2-archive, then copy electron dist only)')
-robocopy(path.join(__dirname), path.join(STAGE, 'desktop'), { excludeDirs: ['node_modules', 'stage2-archive'] })
+log('stage vendor/ (npm production engine, plain files)')
+robocopy(VENDOR, path.join(STAGE, 'desktop', 'vendor'))
+
 fs.mkdirSync(path.join(STAGE, 'desktop', 'node_modules', 'electron'), { recursive: true })
 robocopy(
   path.join(__dirname, 'node_modules', 'electron', 'dist'),
   path.join(STAGE, 'desktop', 'node_modules', 'electron', 'dist'),
 )
-for (const f of ['rpc-test.mjs', 'ui-drive.mjs', 'package-lock.json', 'gen-icons.js', 'pack-green.mjs', 'zip-write.mjs']) {
+for (const f of ['rpc-test.mjs', 'ui-drive.mjs', 'package-lock.json', 'gen-icons.js', 'pack-green.mjs', 'zip-write.mjs', 'fetch-vendor.cjs', 'preset-mount-test.cjs', 'relink.mjs']) {
   fs.rmSync(path.join(STAGE, 'desktop', f), { force: true })
+}
+// 0.4.0 experiment leftovers (封存): the 0.3.9 fc-child template has no anchor
+// turn / compaction-epoch plugins — they must not ship.
+for (const f of ['anchor-turn.mjs', 'compaction-epoch.mjs']) {
+  fs.rmSync(path.join(STAGE, 'desktop', 'presets', 'fc-child-fusion', f), { force: true })
 }
 
 log('bundle node.exe (the runtime this script runs under)')
 fs.copyFileSync(process.execPath, path.join(STAGE, 'desktop', 'node.exe'))
 
 log('write launcher + readme + user guide')
-// launcher logs every run to launch.log (double-click timestamp + the shell's
-// own [desktop Xs] lines): startup-time stats and post-mortem debugging need
-// it — a detached electron's stdout goes nowhere otherwise.
 fs.writeFileSync(
   path.join(STAGE, '启动.bat'),
   '@echo off\r\necho [launch %date% %time%] >> "%~dp0launch.log"\r\nstart "" "%~dp0desktop\\node_modules\\electron\\dist\\electron.exe" "%~dp0desktop\\main.js" >> "%~dp0launch.log" 2>&1\r\n',
@@ -160,7 +93,7 @@ fs.writeFileSync(
 fs.writeFileSync(path.join(STAGE, '说明.txt'), [
   'DeepSeek Harness 桌面版（绿色版）— 快速上手',
   '',
-  '1. 双击「启动.bat」。首次启动重建依赖链接（1-5 分钟，纯本地、免联网、免管理员）。',
+  '1. 双击「启动.bat」，几秒内自动打开应用窗口（无需联网、无需预装 Node）。',
   '2. 在应用内「设置」填写 DeepSeek API Key。',
   '3. 完整使用说明（重点：如何开启「自定义子模型」模式）见「用户指南.md」。',
   '',
@@ -171,8 +104,8 @@ fs.copyFileSync(path.join(__dirname, 'user-guide.md'), path.join(STAGE, '用户�
 // ---- stage-only mode (项目 AGENTS §3.1: 先测试、后打包) ----
 // The user tests the UNPACKED release first (double-click 启动.bat in the
 // versioned dir below); the zip — compress + three-layer verify + publish —
-// only runs AFTER the test passes. --stage-only builds and pre-relinks the
-// unpacked package and stops there. Without the flag: full pipeline.
+// only runs AFTER the test passes. --stage-only builds the unpacked package
+// and stops there. Without the flag: full pipeline.
 const STAGE_ONLY = process.argv.includes('--stage-only')
 if (STAGE_ONLY) {
   log('--stage-only: unpacked release only — skipping zip (test first, zip after user passes)')
@@ -190,9 +123,8 @@ const zipCount = writeZip(STAGE, ZIP_TMP, path.basename(STAGE))
 // ---- verify ----
 log('verify zip contents')
 // Names come straight from the central directory via listZipNames — flag-aware
-// UTF-8 decode, zero codepage conversion (D68: the bsdtar listing mangled
-// 用户指南.md into GBK), and the EOCD parse itself asserts the archive really
-// is a zip (a tar renamed .zip cannot fake it, D61).
+// UTF-8 decode, zero codepage conversion (D68), and the EOCD parse itself
+// asserts the archive really is a zip (a tar renamed .zip cannot fake it, D61).
 const entries = listZipNames(ZIP_TMP)
 if (entries.length !== zipCount) {
   log(`  entry count mismatch: wrote ${zipCount}, listed ${entries.length}`)
@@ -201,12 +133,16 @@ if (entries.length !== zipCount) {
 const has = (suffix) => entries.some((e) => e.replace(/\\/g, '/').endsWith(suffix))
 const required = [
   'desktop/main.js',
-  'desktop/relink.mjs',
   'desktop/shell-config.json',
   'desktop/node.exe',
   'desktop/portable-agents.md',
   '用户指南.md',
   'desktop/node_modules/electron/dist/electron.exe',
+  'desktop/vendor/node_modules/@deepseek-ai/dsh/lib/bin.js',
+  'desktop/vendor/node_modules/@deepseek-ai/dsh/package.json',
+  'desktop/vendor/node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html',
+  'desktop/vendor/node_modules/@deepseek-ai/dsh/config/agent-presets/standard/agent.cordis.yml',
+  'desktop/vendor/node_modules/@deepseek-ai/dsh/config/agent-presets/minimal/agent.cordis.yml',
   'desktop/presets/anchored-standard/agent.cordis.yml',
   'desktop/presets/anchored-standard/LICENSE',
   'desktop/presets/anchored-standard/NOTICE',
@@ -222,13 +158,7 @@ const required = [
   'desktop/presets/fc-child-fusion/agent.cordis.yml',
   'desktop/presets/fc-child-fusion/tool-bootstrap.mjs',
   'desktop/presets/fc-child-fusion/gitbash-executor.mjs',
-  'desktop/presets/fc-child-fusion/LICENSE',
-  'desktop/presets/fc-child-fusion/NOTICE',
   'desktop/preset-gen.cjs',
-  'repo/link-manifest.json',
-  'repo/apps/web/dist/index.html',
-  'repo/apps/cli/src/bin.ts',
-  'repo/package.json',
 ]
 const forbidden = [
   'DeepSeek-Harness/third-party', // project-root third-party/ — upstream repo has its own legit "third-party" files
@@ -241,6 +171,11 @@ const forbidden = [
   'ui-drive.mjs',
   'pack-green.mjs',
   'zip-write.mjs',
+  'fetch-vendor.cjs',
+  'relink.mjs',
+  'anchor-turn.mjs',
+  'compaction-epoch.mjs',
+  'link-manifest.json',
 ]
 let ok = true
 for (const r of required) {
@@ -292,9 +227,6 @@ if (unzipCheck.error && unzipCheck.error.code === 'ENOENT') {
 
 // Atomic publish: expose the real name only after a clean verify, then prune
 // packages of older versions so dist/ never holds two confusingly-similar zips.
-// The old file at the real path is removed only after the .partial has passed
-// every check, so the real path never points at an unverified archive (and
-// Windows rename does not replace an existing file).
 fs.rmSync(ZIP, { force: true })
 fs.renameSync(ZIP_TMP, ZIP)
 for (const f of fs.readdirSync(DIST)) {
@@ -307,11 +239,9 @@ log(`published ${path.basename(ZIP)}`)
 }
 
 // ---- keep an UNPACKED sibling for quick local testing (user requirement,
-// 2026-08-15): rename the staging tree to a versioned dir, pre-relink its
-// dependency junctions so a double-click boots in seconds instead of the
-// 1-5 min first-launch relink, and prune unpacked dirs of older versions.
-// Pre-relink is non-fatal: if it fails the unpacked copy still works, just
-// with the normal first-launch relink.
+// 2026-08-15): rename the staging tree to a versioned dir and prune unpacked
+// dirs of older versions. npm trees are plain files — no pre-relink step, a
+// double-click boots in seconds as shipped.
 const UNPACKED = path.join(DIST, `DeepSeek-Harness-v${pkg.version}`)
 try {
   fs.rmSync(UNPACKED, { recursive: true, force: true })
@@ -340,12 +270,5 @@ for (const f of fs.readdirSync(DIST)) {
       log(`pruned old unpacked dir ${f}`)
     }
   } catch { /* not a dir we manage */ }
-}
-
-const relink = spawnSync(process.execPath, [path.join(UNPACKED, 'desktop', 'relink.mjs')], { stdio: 'inherit' })
-if (relink.status !== 0) {
-  log('  WARNING: pre-relink failed — first launch of the unpacked copy will relink (1-5 min)')
-} else {
-  log('  unpacked copy pre-relinked: double-click 启动.bat boots in seconds')
 }
 process.exit(0)

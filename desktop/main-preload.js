@@ -55,4 +55,16 @@ window.addEventListener('drop', (e) => {
   e.stopImmediatePropagation() // capture phase on window: nothing below sees this drop
   const items = files.map((f, i) => ({ name: f.name, path: webUtils.getPathForFile(f), isImage: metas[i].isImage }))
   ipcRenderer.send('shell:file-drop', items)
+  // The official InputBar closes its whole-page drop overlay from its own
+  // document-level 'drop' handler — which the capture-phase stopImmediatePropagation
+  // above just suppressed — and a real 'dragend' never reaches THIS window
+  // (dragend fires on the drag SOURCE, e.g. Explorer). Synthesize the dragend
+  // the official window-level listener waits for, so the "图片拖动到此处即可添加"
+  // overlay does not stick around covering the whole page.
+  try {
+    window.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true }))
+  } catch {
+    // DragEvent unavailable in some engines — the overlay then clears on the
+    // next drag; never let this break the drop itself.
+  }
 }, true)
