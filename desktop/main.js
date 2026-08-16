@@ -120,13 +120,16 @@ function proxyParts() {
 }
 
 function harnessEnv() {
-  // Proxy for the backend comes from shell-config.json (标题栏「代理设置」writes
-  // it; empty = direct). Injected at spawn time — restart applies changes.
+  // pnpm shim first on PATH: the official `dsh plugin` forwarder spawns bare
+  // `pnpm` — the bundled shim routes it to package-local node.exe + vendor
+  // pnpm, so plugin installs work without a system Node/pnpm (0.4.1).
+  const shimDir = path.join(__dirname, 'pnpm-shim')
+  const env = { ...process.env, PATH: `${shimDir}${path.delimiter}${process.env.PATH || ''}` }
   const { http: httpProxy, https: httpsProxy } = proxyParts()
   const httpsEffective = httpsProxy || httpProxy
-  if (!httpProxy && !httpsProxy) return process.env
+  if (!httpProxy && !httpsProxy) return env
   return {
-    ...process.env,
+    ...env,
     ...(httpProxy ? { HTTP_PROXY: httpProxy } : {}),
     ...(httpsEffective ? { HTTPS_PROXY: httpsEffective } : {}),
     NO_PROXY: 'localhost,127.0.0.1',

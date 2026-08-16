@@ -11,6 +11,7 @@
     "3080"
   ],
   "modelPatch": "agent-models.patch.yml",
+  "vendorPnpm": "11.22.0",
   "port": 3080,
   "ready": {
     "path": "/",
